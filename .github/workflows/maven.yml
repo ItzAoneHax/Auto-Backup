@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 拉取代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'      # 与 pom.xml 的 maven.compiler.release=17 保持一致
           distribution: 'temurin'
@@ -28,7 +28,7 @@ jobs:
         run: ./mvnw -B -ntp clean verify
 
       - name: 上传构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: auto-backup-jar
           path: target/auto-backup.jar
