@@ -1,0 +1,18 @@
+[Unit]
+Description=Baidu Pan Auto Backup (百度网盘自动备份)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# 按需修改为实际运行用户(需有安装目录与备份源目录的读取权限)
+User=root
+WorkingDirectory=/opt/auto-backup
+ExecStart=/usr/bin/java -jar /opt/auto-backup/auto-backup.jar daemon
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

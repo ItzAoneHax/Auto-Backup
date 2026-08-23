@@ -1,0 +1,55 @@
+# ============================================================
+# Auto-Backup 配置文件模板
+# 使用方法: 复制为同目录下的 application.properties 并按需修改
+#   cp application.properties.example application.properties
+# 所有以 # 开头的行均为注释, 未注释的行都有默认值或必填说明
+# ============================================================
+
+# ---------- 百度网盘开放平台凭证(必填) ----------
+# 在 https://pan.baidu.com/union/console 的应用详情中查看
+pan.appKey=填写你的AppKey
+pan.secretKey=填写你的SecretKey
+
+# 远程备份根目录(必填)
+# 个人应用只能访问自己的应用目录, 一般为 /apps/你的应用目录名
+# (应用目录名在控制台"基本资料"中, 不是应用名称)
+pan.remoteDir=/apps/你的应用目录名
+
+# ---------- 备份策略 ----------
+# 要备份的本地目录, 多个用英文逗号分隔
+# 每个目录会各自打包成一个独立的 tar.gz
+backup.sources=/data
+
+# 打包时排除的文件, glob 语法(匹配归档内相对路径), 多个用逗号分隔
+# 示例: 排除所有 .tmp 文件和 cache 目录下所有内容
+#backup.excludes=*.tmp,cache/**
+
+# 每日备份触发时间(daemon 模式下生效, 24 小时制 HH:mm)
+backup.dailyTime=03:00
+
+# 云端 daily 目录保留天数(至多留存近 N 天, 含日志文件)
+backup.retainDays=3
+
+# 每年第一次成功备份时, 额外上传一份到 yearly 目录永久保留
+backup.yearly.enabled=true
+
+# ---------- 本地文件 ----------
+# 打包临时目录(上传成功后自动清理归档文件)
+backup.workDir=./work
+
+# 本地运行日志目录
+backup.logDir=./logs
+
+# 本地日志保留天数
+backup.logRetainDays=30
+
+# 上传成功后删除本地归档文件(false 则保留在 workDir 中)
+backup.deleteLocalArchive=true
+
+# ---------- 上传参数 ----------
+# 分片大小(MB), 需为 4-32 之间 4 的倍数
+# 单个归档最大不能超过 分片大小 x 1024 (4MB 分片即 4GB)
+upload.chunkSizeMB=4
+
+# 分片上传失败重试次数
+upload.retries=3
