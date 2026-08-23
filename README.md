@@ -1,5 +1,7 @@
 # Auto-Backup
 
+[![CI](https://github.com/ItzAoneHax/Auto-Backup/actions/workflows/maven.yml/badge.svg)](https://github.com/ItzAoneHax/Auto-Backup/actions/workflows/maven.yml)
+
 基于 [百度网盘开放平台](https://pan.baidu.com/union/doc/) 的 Linux 服务器自动备份工具。
 
 把服务器上的指定目录每天自动打包上传到你的百度网盘, 云端只保留近几天, 每年另留一份永久存档, 全程日志随备份一起上传。

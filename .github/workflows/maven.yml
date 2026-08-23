@@ -1,0 +1,35 @@
+# Maven CI: 每次推送/PR 到 main 自动构建并跑单元测试, 产物 jar 可在 Actions 页面下载
+# 文档: https://docs.github.com/en/actions/automating-builds-and-building-and-testing-java-with-maven
+
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:          # 允许在 Actions 页面手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'      # 与 pom.xml 的 maven.compiler.release=17 保持一致
+          distribution: 'temurin'
+          cache: maven            # 缓存 ~/.m2 依赖, 加快后续构建
+
+      - name: 构建并运行测试
+        run: ./mvnw -B -ntp clean verify
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-backup-jar
+          path: target/auto-backup.jar
+          if-no-files-found: error
