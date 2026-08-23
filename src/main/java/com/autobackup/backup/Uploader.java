@@ -39,7 +39,8 @@ public class Uploader {
         int chunkCount = (int) ((size + chunkSize - 1) / chunkSize);
         if (chunkCount > 1024) {
             throw new IOException("文件过大: " + size + " 字节, 超过 1024 分片上限(当前分片 "
-                    + chunkSize / 1048576 + "MB). 请增大 upload.chunkSizeMB 或拆分备份内容");
+                    + chunkSize / 1048576 + "MB). 普通用户分片固定 4MB(单文件上限 4GB); "
+                    + "会员/超级会员可将 upload.chunkSizeMB 增大至 16/32(单文件上限 10/20GB)");
         }
 
         log.info("开始上传 " + localFile.getFileName() + " -> " + remotePath
@@ -50,7 +51,9 @@ public class Uploader {
             log.info("秒传成功(云端已有相同内容, 未重新上传)");
             return pre.fsId();
         }
-        for (int seq : pre.parts()) {
+        // 官方文档: 预上传返回的 block_list 为空数组时等价于 [0], 仍需上传第 0 片
+        List<Integer> parts = pre.parts().isEmpty() ? List.of(0) : pre.parts();
+        for (int seq : parts) {
             byte[] chunk = readChunk(localFile, seq, chunkSize);
             uploadChunkWithRetry(remotePath, pre.uploadId(), seq, chunk, blockList.get(seq));
         }

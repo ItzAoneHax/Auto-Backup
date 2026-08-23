@@ -33,7 +33,7 @@ public class OAuthService {
     /** 交互式设备码登录: 打印验证地址, 轮询直到用户完成授权. */
     public TokenInfo loginInteractive() throws InterruptedException {
         JsonNode code = Json.parse(http.get(DEVICE_CODE_URL
-                + "?client_id=" + config.appKey() + "&scope=basic,netdisk"));
+                + "?response_type=device_code&client_id=" + config.appKey() + "&scope=basic,netdisk"));
         checkOAuthError(code, "获取设备码失败");
         String deviceCode = code.path("device_code").asText();
         String userCode = code.path("user_code").asText();

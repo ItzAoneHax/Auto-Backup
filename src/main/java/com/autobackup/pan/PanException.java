@@ -14,8 +14,17 @@ public class PanException extends RuntimeException {
         this.errno = errno;
     }
 
-    /** 令牌过期/失效(111: access token 过期; -6: 令牌非法). */
+    /**
+     * 令牌无效/过期, 上层应刷新令牌后重试.
+     * 官方公共错误码: -6 身份验证失败, 20016 access_token 已过期,
+     * 20017 access_token 无效, 31045 access_token 验证未通过.
+     */
     public boolean isTokenExpired() {
-        return errno == 111 || errno == -6;
+        return errno == -6 || errno == 20016 || errno == 20017 || errno == 31045;
+    }
+
+    /** 111: 有其他异步任务正在执行, 官方建议稍后重试. */
+    public boolean isAsyncBusy() {
+        return errno == 111;
     }
 }

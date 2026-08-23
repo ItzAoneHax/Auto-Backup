@@ -23,21 +23,26 @@ public class PanClient {
 
     private static final String XPAN_FILE = "https://pan.baidu.com/rest/2.0/xpan/file";
     private static final String QUOTA = "https://pan.baidu.com/api/quota";
-    private static final String UINFO = "https://pan.baidu.com/rest/2.0/nas";
-    private static final String PCS_UPLOAD = "https://d.pcs.baidu.com/rest/2.0/pcs/superfile2";
+    private static final String UINFO = "https://pan.baidu.com/rest/2.0/xpan/nas";
+    private static final String LOCATE_UPLOAD = "https://d.pcs.baidu.com/rest/2.0/pcs/file";
+    private static final String DEFAULT_UPLOAD_SERVER = "https://d.pcs.baidu.com";
     private static final int LIST_PAGE = 1000;
 
     private final String accessToken;
     private final HttpUtil http;
+
+    /** locateupload 返回的上传域名缓存(响应 expire=60 秒, 留余量). */
+    private String uploadServerCache;
+    private long uploadServerExpireMillis;
 
     public PanClient(String accessToken, HttpUtil http) {
         this.accessToken = accessToken;
         this.http = http;
     }
 
-    /** 账号信息(含 netdisk_name / baidu_name). */
+    /** 账号信息(含 netdisk_name / baidu_name / vip_type). */
     public JsonNode userInfo() {
-        JsonNode node = Json.parse(http.get(UINFO + "?method=uinfo&access_token=" + accessToken));
+        JsonNode node = Json.parse(http.get(UINFO + "?method=uinfo&access_token=" + accessToken + "&vip_version=v2"));
         if (node.has("errno") && node.path("errno").asInt(0) != 0) {
             throw new PanException(node.path("errno").asInt(), "获取账号信息失败");
         }
@@ -61,6 +66,7 @@ public class PanClient {
             Map<String, String> form = new LinkedHashMap<>();
             form.put("path", current.toString());
             form.put("isdir", "1");
+            form.put("size", "0");
             form.put("rtype", "0");
             JsonNode node = Json.parse(http.postForm(
                     XPAN_FILE + "?method=create&access_token=" + accessToken, form));
@@ -121,7 +127,7 @@ public class PanClient {
 
     /** 上传一个分片, 返回服务端校验的 md5. */
     public String uploadChunk(String path, String uploadId, int partSeq, byte[] data) {
-        String url = PCS_UPLOAD + "?method=upload&access_token=" + accessToken
+        String url = uploadServer(path, uploadId) + "/rest/2.0/pcs/superfile2?method=upload&access_token=" + accessToken
                 + "&type=tmpfile&path=" + encode(path)
                 + "&uploadid=" + encode(uploadId)
                 + "&partseq=" + partSeq;
@@ -145,14 +151,24 @@ public class PanClient {
         return node.path("fs_id").asLong();
     }
 
-    /** 删除远程文件(同步模式). */
+    /** 删除远程文件(官方 async 参数: 0 强制同步, 便于逐文件校验结果). */
     public void delete(List<String> paths) {
         if (paths.isEmpty()) return;
         Map<String, String> form = new LinkedHashMap<>();
         form.put("filelist", Json.write(paths));
-        form.put("async", "2");
+        form.put("async", "0");
         JsonNode node = Json.parse(http.postForm(
                 XPAN_FILE + "?method=filemanager&access_token=" + accessToken + "&opera=delete", form));
+        if (node.path("errno").asInt(0) == 111) {   // 有其他异步任务正在执行, 官方建议稍后重试
+            try {
+                Thread.sleep(5000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new PanException(111, "删除等待重试时被中断");
+            }
+            node = Json.parse(http.postForm(
+                    XPAN_FILE + "?method=filemanager&access_token=" + accessToken + "&opera=delete", form));
+        }
         checkErrno(node, "删除远程文件失败");
         for (JsonNode info : node.path("info")) {
             int errno = info.path("errno").asInt(0);
@@ -160,6 +176,33 @@ public class PanClient {
                 throw new PanException(errno, "删除失败: " + info.path("path").asText());
             }
         }
+    }
+
+    /**
+     * 官方要求分片上传域名需先通过 locateupload 接口动态获取
+     * (取 servers 中任意 https 域名, 结果约 60 秒有效), 获取失败时回退默认域名.
+     */
+    private String uploadServer(String path, String uploadId) {
+        long now = System.currentTimeMillis();
+        if (uploadServerCache != null && now < uploadServerExpireMillis) {
+            return uploadServerCache;
+        }
+        try {
+            String url = LOCATE_UPLOAD + "?method=locateupload&appid=250528&access_token=" + accessToken
+                    + "&path=" + encode(path) + "&uploadid=" + encode(uploadId) + "&upload_version=2.0";
+            JsonNode node = Json.parse(http.get(url));
+            for (JsonNode s : node.path("servers")) {
+                String server = s.path("server").asText("");
+                if (server.startsWith("https://")) {
+                    uploadServerCache = server;
+                    uploadServerExpireMillis = now + 55_000L;
+                    return server;
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // 域名定位失败不阻断上传, 回退默认域名
+        }
+        return DEFAULT_UPLOAD_SERVER;
     }
 
     private void checkErrno(JsonNode node, String action) {
