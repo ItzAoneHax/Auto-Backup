@@ -12,6 +12,13 @@
     <name>Auto-Backup</name>
     <description>基于百度网盘开放平台的 Linux 服务器自动备份工具</description>
 
+    <licenses>
+        <license>
+            <name>GNU Affero General Public License v3.0</name>
+            <url>https://www.gnu.org/licenses/agpl-3.0.txt</url>
+        </license>
+    </licenses>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>17</maven.compiler.release>

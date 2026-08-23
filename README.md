@@ -189,4 +189,4 @@ journalctl -u auto-backup -f                # 实时看运行日志
 
 ## 许可证
 
-[MIT](LICENSE)
+本项目以 [GNU Affero General Public License v3.0](LICENSE) 发布。AGPL-3.0 是强 copyleft 许可证：任何人修改本程序并通过网络提供服务，也必须以 AGPL-3.0 开放其修改后的完整源代码。
