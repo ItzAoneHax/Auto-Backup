@@ -56,3 +56,12 @@ upload.chunkSizeMB=4
 
 # 分片上传失败重试次数
 upload.retries=3
+
+# ---------- 归档分卷 ----------
+# 单个分卷的最大体积(MB), 0 表示不分卷。
+# 网盘对"单个文件"有大小上限(普通用户 4GB / 会员 10GB / 超级会员 20GB),
+# 分片上传只是传输方式, 不能突破该上限; 开启分卷后, 超过分卷大小的归档
+# 会切成 xxx.tar.gz.part001、xxx.tar.gz.part002... 多个文件分别上传。
+# 恢复方法: cat xxx.tar.gz.part* > xxx.tar.gz 后再 tar -xzf 解压。
+# 建议略低于账号上限留出余量: 普通用户 3900 / 会员 9500 / 超级会员 19500
+upload.splitSizeMB=0

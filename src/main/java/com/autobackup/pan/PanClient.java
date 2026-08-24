@@ -35,6 +35,9 @@ public class PanClient {
     private String uploadServerCache;
     private long uploadServerExpireMillis;
 
+    /** 定位域名网络不可达时的冷却截止时间, 冷却期间直接用默认域名. */
+    private long skipLocatedUntil;
+
     public PanClient(String accessToken, HttpUtil http) {
         this.accessToken = accessToken;
         this.http = http;
@@ -71,9 +74,19 @@ public class PanClient {
             JsonNode node = Json.parse(http.postForm(
                     XPAN_FILE + "?method=create&access_token=" + accessToken, form));
             int errno = node.path("errno").asInt(0);
-            if (errno != 0 && errno != -8) {   // -8: 目录已存在
-                throw new PanException(errno, "创建远程目录失败: " + current);
-            }
+            if (errno == 0 || errno == -8) continue;   // -8: 目录已存在
+            // 创建失败但目录实际已存在(如 /apps 等系统级目录不允许"创建")时不视为错误
+            if (dirExists(current.toString())) continue;
+            throw new PanException(errno, "创建远程目录失败: " + current);
+        }
+    }
+
+    private boolean dirExists(String dir) {
+        try {
+            list(dir);
+            return true;
+        } catch (RuntimeException e) {
+            return false;
         }
     }
 
@@ -182,8 +195,17 @@ public class PanClient {
      * 官方要求分片上传域名需先通过 locateupload 接口动态获取
      * (取 servers 中任意 https 域名, 结果约 60 秒有效), 获取失败时回退默认域名.
      */
+    /** 定位出的上传域名连不上时调用, 一段时间内改用默认域名. */
+    public void invalidateUploadServer() {
+        uploadServerCache = null;
+        skipLocatedUntil = System.currentTimeMillis() + 10 * 60_000L;
+    }
+
     private String uploadServer(String path, String uploadId) {
         long now = System.currentTimeMillis();
+        if (now < skipLocatedUntil) {
+            return DEFAULT_UPLOAD_SERVER;
+        }
         if (uploadServerCache != null && now < uploadServerExpireMillis) {
             return uploadServerCache;
         }

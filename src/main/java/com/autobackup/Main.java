@@ -32,6 +32,9 @@ public final class Main {
     private static final String DEFAULT_CONFIG = "config/application.properties";
 
     public static void main(String[] args) {
+        // 部分上传域名同时有 AAAA 记录, 无 IPv6 路由的主机会出现 "Network is unreachable";
+        // 统一走 IPv4(须在任何网络调用前设置)
+        System.setProperty("java.net.preferIPv4Stack", "true");
         try {
             System.exit(dispatch(args));
         } catch (Exception e) {
@@ -41,15 +44,16 @@ public final class Main {
     }
 
     private static int dispatch(String[] args) throws Exception {
-        String command = "help";
+        String command = null;
         String configPath = DEFAULT_CONFIG;
         for (String arg : args) {
             if (arg.startsWith("--config=")) {
                 configPath = arg.substring("--config=".length());
-            } else if (!arg.startsWith("-")) {
+            } else if (!arg.startsWith("-") && command == null) {
                 command = arg;
             }
         }
+        if (command == null) command = "help";
         Path config = Path.of(configPath);
         return switch (command) {
             case "login" -> {
@@ -62,6 +66,12 @@ public final class Main {
             }
             case "run" -> runOnce(config) ? 0 : 1;
             case "daemon" -> daemon(config) ? 0 : 1;
+            case "ls" -> {
+                String remotePath = firstNonFlagArg(args);
+                if (remotePath == null) throw new IllegalStateException("用法: ls <远程路径>  例: ls /apps");
+                listRemote(config, remotePath);
+                yield 0;
+            }
             default -> {
                 printHelp();
                 yield "help".equals(command) ? 0 : 2;
@@ -117,6 +127,30 @@ public final class Main {
         }
     }
 
+    /** 调试用: 列出网盘任意目录, 常用于发现个人应用的应用目录名(ls /apps). */
+    private static void listRemote(Path configPath, String remotePath) throws Exception {
+        AppConfig config = AppConfig.load(configPath);
+        HttpUtil http = new HttpUtil();
+        OAuthService oauth = new OAuthService(config, http, new TokenStore(config.tokenFile()));
+        PanClient pan = new PanClient(oauth.ensureValidToken().accessToken(), http);
+        List<RemoteFile> files = pan.list(remotePath);
+        if (files.isEmpty()) {
+            System.out.println("(目录为空或不存在: " + remotePath + ")");
+            return;
+        }
+        for (RemoteFile f : files) {
+            System.out.println((f.dir() ? "d " : "- ") + f.name() + (f.dir() ? "" : "  " + f.size() + " 字节"));
+        }
+    }
+
+    /** 取第一个非选项、非命令的参数(如 ls 的路径). */
+    private static String firstNonFlagArg(String[] args) {
+        for (String arg : args) {
+            if (!arg.startsWith("-") && !"ls".equals(arg)) return arg;
+        }
+        return null;
+    }
+
     private static boolean runOnce(Path configPath) throws Exception {
         AppConfig config = AppConfig.load(configPath);
         config.validateForBackup();
@@ -153,6 +187,7 @@ public final class Main {
                   verify   检查凭证、网盘容量与远程目录
                   run      立即执行一次备份(适合配置到系统 crontab)
                   daemon   常驻进程, 每天 backup.dailyTime 自动备份(适合 systemd)
+                  ls       列出网盘目录(调试用, 例: ls /apps)
                   help     显示本帮助
 
                 默认配置文件: config/application.properties (相对当前工作目录)

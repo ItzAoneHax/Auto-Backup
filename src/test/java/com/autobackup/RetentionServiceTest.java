@@ -18,6 +18,8 @@ class RetentionServiceTest {
                 RetentionService.parseEmbeddedDate("backup-2025-01-01_030000.log"));
         assertEquals(LocalDate.of(2026, 12, 31),
                 RetentionService.parseEmbeddedDate("mysql_data-2026-12-31_235959.tar.gz"));
+        assertEquals(LocalDate.of(2026, 8, 23),
+                RetentionService.parseEmbeddedDate("data-2026-08-23_030000.tar.gz.part001"));
     }
 
     @Test

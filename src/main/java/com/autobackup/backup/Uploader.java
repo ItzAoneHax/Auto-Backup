@@ -4,6 +4,7 @@ import com.autobackup.config.AppConfig;
 import com.autobackup.pan.PanClient;
 import com.autobackup.pan.PanException;
 import com.autobackup.pan.PrecreateResult;
+import com.autobackup.util.HttpNetworkException;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -38,9 +39,9 @@ public class Uploader {
         int chunkSize = config.chunkSizeBytes();
         int chunkCount = (int) ((size + chunkSize - 1) / chunkSize);
         if (chunkCount > 1024) {
-            throw new IOException("文件过大: " + size + " 字节, 超过 1024 分片上限(当前分片 "
-                    + chunkSize / 1048576 + "MB). 普通用户分片固定 4MB(单文件上限 4GB); "
-                    + "会员/超级会员可将 upload.chunkSizeMB 增大至 16/32(单文件上限 10/20GB)");
+            throw new IOException("文件过大: " + localFile.getFileName() + " " + size + " 字节, 超过 1024 分片上限(当前分片 "
+                    + chunkSize / 1048576 + "MB). 可增大 upload.chunkSizeMB(会员 16/超级会员 32), "
+                    + "或配置 upload.splitSizeMB 分卷使单个文件不超过账号单文件上限");
         }
 
         log.info("开始上传 " + localFile.getFileName() + " -> " + remotePath
@@ -123,6 +124,9 @@ public class Uploader {
             } catch (RuntimeException e) {
                 if (e instanceof PanException pe && pe.isTokenExpired()) {
                     throw e;   // 令牌过期交由上层统一刷新重试, 不在分片层重试
+                }
+                if (e instanceof HttpNetworkException) {
+                    pan.invalidateUploadServer();   // 定位域名不可达, 换默认上传域名再试
                 }
                 last = e;
                 log.warn("分片 " + seq + " 第 " + attempt + " 次上传失败: " + e.getMessage());

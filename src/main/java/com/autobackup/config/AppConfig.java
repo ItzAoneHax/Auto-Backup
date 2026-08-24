@@ -30,6 +30,7 @@ public final class AppConfig {
     private final int logRetainDays;
     private final boolean deleteLocalArchive;
     private final int chunkSizeMB;
+    private final int splitSizeMB;
     private final int uploadRetries;
     private final Path tokenFile;
 
@@ -48,6 +49,7 @@ public final class AppConfig {
         this.logRetainDays = intProp(props, "backup.logRetainDays", 30);
         this.deleteLocalArchive = boolProp(props, "backup.deleteLocalArchive", true);
         this.chunkSizeMB = intProp(props, "upload.chunkSizeMB", 4);
+        this.splitSizeMB = intProp(props, "upload.splitSizeMB", 0);
         this.uploadRetries = intProp(props, "upload.retries", 3);
         this.tokenFile = this.configFile.resolveSibling("token.json");
     }
@@ -82,6 +84,9 @@ public final class AppConfig {
             problems.add("upload.chunkSizeMB 需为 4-32 之间 4 的倍数");
         }
         if (uploadRetries < 1) problems.add("upload.retries 不能小于 1");
+        if (splitSizeMB != 0 && (splitSizeMB < 64 || splitSizeMB > 20480)) {
+            problems.add("upload.splitSizeMB 需为 0(不分卷)或 64-20480 之间的 MB 数(不超过账号单文件上限)");
+        }
         try {
             LocalTime.parse(dailyTime);
         } catch (DateTimeParseException e) {
@@ -97,11 +102,17 @@ public final class AppConfig {
         return "appKey=" + appKey + ", secretKey=" + mask(secretKey)
                 + ", 远程目录=" + remoteDir + ", 备份源=" + sources
                 + ", 每日时间=" + dailyTime + ", 保留天数=" + retainDays
-                + ", 年度备份=" + yearlyEnabled + ", 分片=" + chunkSizeMB + "MB, 重试=" + uploadRetries;
+                + ", 年度备份=" + yearlyEnabled + ", 分片=" + chunkSizeMB + "MB"
+                + ", 分卷=" + (splitSizeMB == 0 ? "关闭" : splitSizeMB + "MB") + ", 重试=" + uploadRetries;
     }
 
     public int chunkSizeBytes() {
         return chunkSizeMB * 1024 * 1024;
+    }
+
+    /** 分卷字节数, 0 表示不分卷. */
+    public long splitSizeBytes() {
+        return (long) splitSizeMB * 1024 * 1024;
     }
 
     public String dailyDir() {
@@ -126,6 +137,7 @@ public final class AppConfig {
     public int logRetainDays() { return logRetainDays; }
     public boolean deleteLocalArchive() { return deleteLocalArchive; }
     public int chunkSizeMB() { return chunkSizeMB; }
+    public int splitSizeMB() { return splitSizeMB; }
     public int uploadRetries() { return uploadRetries; }
     public Path tokenFile() { return tokenFile; }
 

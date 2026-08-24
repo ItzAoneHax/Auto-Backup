@@ -66,7 +66,7 @@ public class HttpUtil {
             HttpResponse<T> response = client.send(request, handler);
             return response.body();
         } catch (IOException e) {
-            throw new IllegalStateException("HTTP 请求失败(" + e.getClass().getSimpleName() + "): "
+            throw new HttpNetworkException("HTTP 请求失败(" + e.getClass().getSimpleName() + "): "
                     + request.uri() + " : " + e.getMessage(), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

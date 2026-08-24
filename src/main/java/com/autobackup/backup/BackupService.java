@@ -101,18 +101,21 @@ public class BackupService {
                 Path source = sources.get(i);
                 String name = names.get(i);
                 log.section("备份源 [" + (i + 1) + "/" + sources.size() + "]: " + source);
+                List<Path> parts = List.of();
                 try {
-                    Path archive = config.workDir().resolve(name + "-" + runId + ".tar.gz");
-                    ArchiveService.ArchiveResult result =
-                            archiveService.createArchive(source, name, archive, config.excludes(), log);
-                    log.info("打包完成: " + archive.getFileName() + " ("
-                            + result.size() / 1048576 + " MB, " + result.fileCount() + " 个文件)");
-                    uploader.upload(archive, dailyDir + "/" + name + "-" + runId + ".tar.gz");
-                    retention.ensureYearlySnapshot(uploader, archive, name, yearlyDir);
-                    if (config.deleteLocalArchive()) {
-                        Files.deleteIfExists(archive);
+                    Path archiveBase = config.workDir().resolve(name + "-" + runId + ".tar.gz");
+                    ArchiveService.ArchiveResult result = archiveService.createArchive(
+                            source, name, archiveBase, config.excludes(), config.splitSizeBytes(), log);
+                    parts = result.parts();
+                    log.info("打包完成: " + archiveBase.getFileName() + " (共 " + parts.size() + " 个分卷, "
+                            + result.totalSize() / 1048576 + " MB, " + result.fileCount() + " 个文件)");
+                    for (Path part : parts) {
+                        uploader.upload(part, dailyDir + "/" + part.getFileName());
                     }
+                    retention.ensureYearlySnapshot(uploader, parts, name, yearlyDir);
+                    deleteLocal(parts);
                 } catch (Exception e) {
+                    deleteLocal(parts);   // 上传失败的分卷留在本地也没有价值(下次运行会重新打包)
                     log.error("备份源 " + source + " 失败: " + e.getMessage(), e);
                     allOk = false;
                 }
@@ -131,6 +134,18 @@ public class BackupService {
         } catch (IOException e) {
             log.error("本地目录准备失败: " + e.getMessage(), e);
             return false;
+        }
+    }
+
+    /** 按配置清理本地归档分卷; deleteLocalArchive=false 时保留. */
+    private void deleteLocal(List<Path> parts) {
+        if (!config.deleteLocalArchive()) return;
+        for (Path part : parts) {
+            try {
+                Files.deleteIfExists(part);
+            } catch (IOException e) {
+                // 清理失败不影响本次备份结果, 残留分卷随 workDir 人工清理
+            }
         }
     }
 

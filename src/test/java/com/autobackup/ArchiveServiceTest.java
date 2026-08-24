@@ -9,10 +9,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 
 class ArchiveServiceTest {
 
@@ -28,13 +30,14 @@ class ArchiveServiceTest {
 
         Path target = temp.resolve("out.tar.gz");
         ArchiveService.ArchiveResult result = new ArchiveService()
-                .createArchive(source, "data", target, List.of(), LogService.consoleOnly());
+                .createArchive(source, "data", target, List.of(), 0, LogService.consoleOnly());
 
         List<String> entries = readEntries(target);
         org.junit.jupiter.api.Assertions.assertTrue(entries.contains("data/a.txt"));
         org.junit.jupiter.api.Assertions.assertTrue(entries.contains("data/sub/b.txt"));
         org.junit.jupiter.api.Assertions.assertEquals(2, result.fileCount());
-        org.junit.jupiter.api.Assertions.assertTrue(result.size() > 0);
+        org.junit.jupiter.api.Assertions.assertTrue(result.totalSize() > 0);
+        org.junit.jupiter.api.Assertions.assertEquals(1, result.parts().size());
     }
 
     @Test
@@ -47,12 +50,68 @@ class ArchiveServiceTest {
 
         Path target = temp.resolve("out2.tar.gz");
         new ArchiveService().createArchive(source, "app", target,
-                List.of("cache/**", "*.log"), LogService.consoleOnly());
+                List.of("cache/**", "*.log"), 0, LogService.consoleOnly());
 
         List<String> entries = readEntries(target);
         org.junit.jupiter.api.Assertions.assertTrue(entries.contains("app/main.conf"));
         org.junit.jupiter.api.Assertions.assertFalse(entries.contains("app/cache/blob.bin"));
         org.junit.jupiter.api.Assertions.assertFalse(entries.contains("app/debug.log"));
+    }
+
+    @Test
+    void splitsIntoPartsWhoseConcatenationIsReadable() throws Exception {
+        Path source = temp.resolve("data");
+        Files.createDirectories(source.resolve("sub"));
+        Random random = new Random(42);
+        writeRandom(source.resolve("a.txt"), random, 4096);
+        writeRandom(source.resolve("b.txt"), random, 4096);
+        writeRandom(source.resolve("sub/c.txt"), random, 4096);
+
+        Path base = temp.resolve("split.tar.gz");
+        ArchiveService.ArchiveResult result = new ArchiveService()
+                .createArchive(source, "data", base, List.of(), 500, LogService.consoleOnly());
+
+        org.junit.jupiter.api.Assertions.assertTrue(result.parts().size() >= 2);
+        for (int i = 0; i < result.parts().size(); i++) {
+            String expected = "split.tar.gz" + String.format(".part%03d", i + 1);
+            org.junit.jupiter.api.Assertions.assertEquals(expected, result.parts().get(i).getFileName().toString());
+            org.junit.jupiter.api.Assertions.assertTrue(Files.size(result.parts().get(i)) <= 500,
+                    "分卷超过大小限制: " + result.parts().get(i));
+        }
+
+        // 顺序拼接所有分卷后应等价于完整的 tar.gz
+        Path joined = temp.resolve("joined.tar.gz");
+        try (OutputStream out = Files.newOutputStream(joined)) {
+            for (Path part : result.parts()) {
+                Files.copy(part, out);
+            }
+        }
+        List<String> entries = readEntries(joined);
+        org.junit.jupiter.api.Assertions.assertTrue(entries.contains("data/a.txt"));
+        org.junit.jupiter.api.Assertions.assertTrue(entries.contains("data/b.txt"));
+        org.junit.jupiter.api.Assertions.assertTrue(entries.contains("data/sub/c.txt"));
+    }
+
+    @Test
+    void singlePartWhenBelowSplitLimit() throws Exception {
+        Path source = temp.resolve("data");
+        Files.createDirectories(source);
+        Files.writeString(source.resolve("a.txt"), "hello");
+
+        Path base = temp.resolve("one.tar.gz");
+        ArchiveService.ArchiveResult result = new ArchiveService()
+                .createArchive(source, "data", base, List.of(), 64 * 1024 * 1024, LogService.consoleOnly());
+
+        org.junit.jupiter.api.Assertions.assertEquals(1, result.parts().size());
+        org.junit.jupiter.api.Assertions.assertEquals("one.tar.gz.part001",
+                result.parts().get(0).getFileName().toString());
+    }
+
+    /** 随机内容不可压缩, 保证归档体积稳定超过分卷阈值. */
+    private static void writeRandom(Path file, Random random, int size) throws Exception {
+        byte[] data = new byte[size];
+        random.nextBytes(data);
+        Files.write(file, data);
     }
 
     private static List<String> readEntries(Path tarGz) throws Exception {
