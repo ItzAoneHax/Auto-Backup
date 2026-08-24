@@ -10,7 +10,8 @@
 
 - **自动备份**: 常驻进程每天在设定时间自动执行; 也支持外部 crontab 调用
 - **滚动清理**: 云端只保留近 N 天(默认 3 天)的备份与日志, 到期自动删除
-- **年度永久备份**: 每年第一次成功备份额外存一份到 `yearly/` 目录, 永不清理
+- **年度永久备份**: 每年第一次成功备份后, 在云端复制一份到 `yearly/` 目录(服务端复制, 零上传流量), 永不清理
+- **月度永久备份**: 每月第一次成功备份后, 在云端复制一份到 `monthly/` 目录, 永不清理
 - **运行日志云端留存**: 每次备份生成 `backup-<日期时间>.log`, 备份完成后上传, 与备份文件同期清理
 - **无浏览器授权**: OAuth 设备码方式, 服务器上一次 `login` 即可, 令牌自动续期
 - **分片上传 + 秒传 + 断片重试**: 按官方 precreate → superfile2 → create 流程, 4/8/16/32MB 分片
@@ -133,7 +134,8 @@ journalctl -u auto-backup -f                # 实时看运行日志
 | `backup.excludes` | 空 | 打包排除规则, glob 语法, 如 `*.tmp,cache/**` |
 | `backup.dailyTime` | `03:00` | 每日备份触发时间(daemon 模式) |
 | `backup.retainDays` | `3` | 云端保留天数(至多留存近 N 天) |
-| `backup.yearly.enabled` | `true` | 每年首份成功备份永久留档到 `yearly/` |
+| `backup.yearly.enabled` | `true` | 每年首份成功备份云端复制留档到 `yearly/` |
+| `backup.monthly.enabled` | `true` | 每月首份成功备份云端复制留档到 `monthly/` |
 | `backup.workDir` | `./work` | 打包临时目录 |
 | `backup.logDir` | `./logs` | 本地日志目录 |
 | `backup.logRetainDays` | `30` | 本地日志保留天数 |
@@ -149,9 +151,14 @@ journalctl -u auto-backup -f                # 实时看运行日志
 ├── daily/                              # 近 N 天滚动(自动清理)
 │   ├── data-2026-08-23_030000.tar.gz   # 备份(目录名-日期时间)
 │   └── backup-2026-08-23_030000.log    # 同次运行的日志
+├── monthly/                            # 每月一份, 永久保留
+│   └── data-2026-08-24_030000.tar.gz   # 复制自当月首份成功备份(保留原文件名)
 └── yearly/                             # 每年一份, 永久保留
-    └── data-2026.tar.gz
+    └── data-2026-08-24_030000.tar.gz
 ```
+
+**Q: yearly/monthly 里的快照文件名为什么是完整日期?**
+快照是当月/当年第一份成功备份在云端的副本(服务端复制, 不重新上传、秒级完成), 因此保留原始文件名。旧版本快照命名为 `name-年份.tar.gz`, 同样有效。
 
 ## 常见问题
 
@@ -165,14 +172,21 @@ journalctl -u auto-backup -f                # 实时看运行日志
 官方限制与账号等级挂钩: 普通用户分片固定 4MB、单文件上限 4GB; 会员分片最大 16MB、单文件上限 10GB; 超级会员 32MB、20GB。超过单文件上限的目录可开启归档分卷(`upload.splitSizeMB`, 建议普通 3900 / 会员 9500 / 超级会员 19500): 归档被切成 `xxx.tar.gz.part001、.part002...` 多个文件分别上传, 恢复方法见下一问(官方接口也不支持空文件上传, 本程序的归档与日志文件始终非空, 不受影响)。
 
 **Q: 分卷备份怎么恢复?**
-在网盘(或客户端)把同一归档的所有分卷下载到同一目录, 然后按序拼接再解压:
+文件名不带 `.partNNN` 后缀的备份就是一个完整的 tar.gz, 下载后可直接用 WinRAR/7-Zip/tar 解压。
+带 `.partNNN` 的多分卷备份, 需把同一归档的**所有分卷**下载到同一目录(缺一不可), 先按序号拼接成一个文件再解压:
 
+Linux / macOS / Git Bash(通配符自动按序号排序, 推荐):
 ```bash
-cat data-2026-08-23_030000.tar.gz.part* > data.tar.gz
-tar -xzf data.tar.gz        # 解出的目录结构与原始一致
+cat xxx.tar.gz.part* > full.tar.gz
+tar -xzf full.tar.gz        # 解出的目录结构与原始一致
 ```
 
-也可以一步到位: `cat xxx.tar.gz.part* | tar -xz`。
+Windows cmd(分卷少时逐个列出, 用 + 连接):
+```cmd
+copy /b xxx.tar.gz.part001+xxx.tar.gz.part002+xxx.tar.gz.part003 full.tar.gz
+```
+
+拼接得到的 `full.tar.gz` 即可用 WinRAR/7-Zip 打开解压。注意: 分卷文件名中日期时间相同才属于同一份归档; 拼接顺序必须按序号, `cat` 通配符已保证这一点, `copy /b` 需要自己按序号书写。
 
 
 **Q: 备份太慢?**

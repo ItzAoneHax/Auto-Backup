@@ -89,9 +89,9 @@ public class BackupService {
         try {
             Files.createDirectories(config.workDir());
             String dailyDir = config.dailyDir();
-            String yearlyDir = config.yearlyDir();
             pan.mkdirs(dailyDir);
-            pan.mkdirs(yearlyDir);
+            pan.mkdirs(config.monthlyDir());
+            pan.mkdirs(config.yearlyDir());
             Uploader uploader = new Uploader(pan, config, log);
             RetentionService retention = new RetentionService(pan, config, log);
 
@@ -109,10 +109,14 @@ public class BackupService {
                     parts = result.parts();
                     log.info("打包完成: " + archiveBase.getFileName() + " (共 " + parts.size() + " 个分卷, "
                             + result.totalSize() / 1048576 + " MB, " + result.fileCount() + " 个文件)");
+                    List<String> remotePaths = new ArrayList<>();
                     for (Path part : parts) {
-                        uploader.upload(part, dailyDir + "/" + part.getFileName());
+                        String remote = dailyDir + "/" + part.getFileName();
+                        uploader.upload(part, remote);
+                        remotePaths.add(remote);
                     }
-                    retention.ensureYearlySnapshot(uploader, parts, name, yearlyDir);
+                    retention.ensureMonthlySnapshot(uploader, parts, remotePaths, name);
+                    retention.ensureYearlySnapshot(uploader, parts, remotePaths, name);
                     deleteLocal(parts);
                 } catch (Exception e) {
                     deleteLocal(parts);   // 上传失败的分卷留在本地也没有价值(下次运行会重新打包)

@@ -25,6 +25,7 @@ public final class AppConfig {
     private final String dailyTime;
     private final int retainDays;
     private final boolean yearlyEnabled;
+    private final boolean monthlyEnabled;
     private final Path workDir;
     private final Path logDir;
     private final int logRetainDays;
@@ -44,6 +45,7 @@ public final class AppConfig {
         this.dailyTime = props.getProperty("backup.dailyTime", "03:00").trim();
         this.retainDays = intProp(props, "backup.retainDays", 3);
         this.yearlyEnabled = boolProp(props, "backup.yearly.enabled", true);
+        this.monthlyEnabled = boolProp(props, "backup.monthly.enabled", true);
         this.workDir = Path.of(props.getProperty("backup.workDir", "./work")).toAbsolutePath().normalize();
         this.logDir = Path.of(props.getProperty("backup.logDir", "./logs")).toAbsolutePath().normalize();
         this.logRetainDays = intProp(props, "backup.logRetainDays", 30);
@@ -102,7 +104,8 @@ public final class AppConfig {
         return "appKey=" + appKey + ", secretKey=" + mask(secretKey)
                 + ", 远程目录=" + remoteDir + ", 备份源=" + sources
                 + ", 每日时间=" + dailyTime + ", 保留天数=" + retainDays
-                + ", 年度备份=" + yearlyEnabled + ", 分片=" + chunkSizeMB + "MB"
+                + ", 年度备份=" + yearlyEnabled + ", 月度备份=" + monthlyEnabled
+                + ", 分片=" + chunkSizeMB + "MB"
                 + ", 分卷=" + (splitSizeMB == 0 ? "关闭" : splitSizeMB + "MB") + ", 重试=" + uploadRetries;
     }
 
@@ -123,6 +126,10 @@ public final class AppConfig {
         return remoteDir + "/yearly";
     }
 
+    public String monthlyDir() {
+        return remoteDir + "/monthly";
+    }
+
     public Path configFile() { return configFile; }
     public String appKey() { return appKey; }
     public String secretKey() { return secretKey; }
@@ -132,6 +139,7 @@ public final class AppConfig {
     public String dailyTime() { return dailyTime; }
     public int retainDays() { return retainDays; }
     public boolean yearlyEnabled() { return yearlyEnabled; }
+    public boolean monthlyEnabled() { return monthlyEnabled; }
     public Path workDir() { return workDir; }
     public Path logDir() { return logDir; }
     public int logRetainDays() { return logRetainDays; }

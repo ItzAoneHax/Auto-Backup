@@ -81,7 +81,13 @@ public class ArchiveService {
             split.deleteParts();   // 失败的半成品分卷没有恢复价值, 直接清理
             throw e;
         }
-        return new ArchiveResult(split.parts(), split.totalBytes(), count[0]);
+        List<Path> parts = split.parts();
+        if (splitBytes > 0 && parts.size() == 1) {
+            // 未超过分卷阈值时去掉 .part001 后缀, 云端与本地均为完整可直解的 .tar.gz
+            Files.move(parts.get(0), targetFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            parts = List.of(targetFile);
+        }
+        return new ArchiveResult(parts, split.totalBytes(), count[0]);
     }
 
     /**

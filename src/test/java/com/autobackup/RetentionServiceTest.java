@@ -23,6 +23,15 @@ class RetentionServiceTest {
     }
 
     @Test
+    void snapshotPrefixesCarryPeriodMarkers() {
+        String name = "_20020_RefactorBedClutch";
+        assertEquals(name + "-" + java.time.Year.now().getValue(),
+                RetentionService.yearlyPrefix(name));
+        assertEquals(name + "-" + java.time.YearMonth.now().toString(),
+                RetentionService.monthlyPrefix(name));
+    }
+
+    @Test
     void returnsNullForUnknownOrInvalidNames() {
         assertNull(RetentionService.parseEmbeddedDate("random-file.zip"));
         assertNull(RetentionService.parseEmbeddedDate("not-a-date-2026-13-45.txt"));

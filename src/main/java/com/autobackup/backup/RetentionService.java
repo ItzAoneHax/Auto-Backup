@@ -6,6 +6,7 @@ import com.autobackup.pan.RemoteFile;
 
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,8 +16,9 @@ import java.util.regex.Pattern;
 /**
  * 云端保留策略:
  * 1. daily 目录只保留近 N 天(默认 3 天)的备份与日志, 更早的自动删除;
- * 2. 每年第一次成功备份额外上传一份到 yearly 目录, 永不清理;
- * 3. 只删除文件名内嵌 yyyy-MM-dd 日期且早于截止日的文件, 其他文件一律不动.
+ * 2. 每月/每年第一次成功备份后, 把当次 daily 文件在云端复制一份到 monthly/ 与 yearly/ 目录,
+ *    永不清理(服务端复制, 无二次上传流量; 复制失败时回退为从本地上传);
+ * 3. daily 清理只删除文件名内嵌 yyyy-MM-dd 日期且早于截止日的文件, 其他文件一律不动.
  */
 public class RetentionService {
 
@@ -54,39 +56,64 @@ public class RetentionService {
         }
     }
 
-    /**
-     * 每年第一次成功备份时, 额外上传一份到 yearly 目录(永不清理).
-     * 单文件归档上传为 name-YYYY.tar.gz; 分卷归档上传为 name-YYYY.tar.gz.part001...
-     */
-    public void ensureYearlySnapshot(Uploader uploader, List<Path> localParts, String sourceName, String yearlyDir) {
+    /** 每月第一次成功备份后, 云端复制一份到 monthly 目录(永不清理). */
+    public void ensureMonthlySnapshot(Uploader uploader, List<Path> localParts,
+                                      List<String> dailyRemotePaths, String sourceName) {
+        if (!config.monthlyEnabled()) return;
+        String prefix = monthlyPrefix(sourceName);
+        ensureSnapshot(uploader, localParts, dailyRemotePaths,
+                config.monthlyDir(), prefix, "月度");
+    }
+
+    /** 每年第一次成功备份后, 云端复制一份到 yearly 目录(永不清理). */
+    public void ensureYearlySnapshot(Uploader uploader, List<Path> localParts,
+                                     List<String> dailyRemotePaths, String sourceName) {
         if (!config.yearlyEnabled()) return;
-        String base = sourceName + "-" + LocalDate.now().getYear() + ".tar.gz";
-        boolean single = localParts.size() == 1
-                && localParts.get(0).getFileName().toString().endsWith(".tar.gz");
-        String firstRemote = single ? base : base + ".part001";
-        boolean exists = pan.list(yearlyDir).stream()
-                .anyMatch(f -> f.name().equals(firstRemote));
+        String prefix = yearlyPrefix(sourceName);
+        ensureSnapshot(uploader, localParts, dailyRemotePaths,
+                config.yearlyDir(), prefix, "年度");
+    }
+
+    /**
+     * 快照 = 把刚上传的 daily 文件在云端复制到快照目录, 保留原始文件名(含完整日期时间).
+     * 存在性按前缀判断(兼容旧命名 name-2026.tar.gz); 极端情况下备份源目录名本身
+     * 形如 "xx-2026" 时可能误判已存在, 属可接受的命名边界.
+     */
+    private void ensureSnapshot(Uploader uploader, List<Path> localParts,
+                                List<String> dailyRemotePaths, String snapshotDir,
+                                String prefix, String label) {
+        boolean exists = pan.list(snapshotDir).stream()
+                .anyMatch(f -> f.name().startsWith(prefix));
         if (exists) {
-            log.info("年度备份 " + firstRemote + " 已存在, 跳过");
+            log.info(label + "快照已存在, 跳过 (" + prefix + "*)");
             return;
         }
-        log.info("上传年度永久备份 " + firstRemote
-                + (single ? "" : " (共 " + localParts.size() + " 个分卷)"));
         try {
-            for (Path part : localParts) {
-                String remote = single ? base : base + partFileNameSuffix(part);
-                uploader.upload(part, yearlyDir + "/" + remote);
+            for (int i = 0; i < dailyRemotePaths.size(); i++) {
+                String fileName = localParts.get(i).getFileName().toString();
+                pan.copy(dailyRemotePaths.get(i), snapshotDir + "/" + fileName);
             }
+            log.info(label + "快照: 云端复制完成 -> " + snapshotDir);
         } catch (Exception e) {
-            log.error("年度备份上传失败: " + base, e);
+            log.warn(label + "快照云端复制失败(" + e.getMessage() + "), 改为从本地上传");
+            try {
+                for (Path part : localParts) {
+                    uploader.upload(part, snapshotDir + "/" + part.getFileName());
+                }
+            } catch (Exception e2) {
+                log.error(label + "快照上传也失败: " + e2.getMessage(), e2);
+            }
         }
     }
 
-    /** 分卷文件的 .partNNN 后缀; 单文件归档返回空串(由调用方决定是否使用). */
-    private static String partFileNameSuffix(Path part) {
-        String name = part.getFileName().toString();
-        int idx = name.lastIndexOf(".part");
-        return idx >= 0 ? name.substring(idx) : "";
+    /** 年度快照前缀: name-YYYY(兼容匹配旧命名 name-YYYY.tar.gz 与新命名 name-YYYY-MM-DD_...). */
+    public static String yearlyPrefix(String sourceName) {
+        return sourceName + "-" + LocalDate.now().getYear();
+    }
+
+    /** 月度快照前缀: name-YYYY-MM. */
+    public static String monthlyPrefix(String sourceName) {
+        return sourceName + "-" + YearMonth.now();
     }
 
     /** 从文件名解析内嵌日期, 无日期或非法日期返回 null. */

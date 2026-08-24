@@ -25,6 +25,7 @@ public class PanClient {
     private static final String QUOTA = "https://pan.baidu.com/api/quota";
     private static final String UINFO = "https://pan.baidu.com/rest/2.0/xpan/nas";
     private static final String LOCATE_UPLOAD = "https://d.pcs.baidu.com/rest/2.0/pcs/file";
+    private static final String PCS_FILE = "https://pcs.baidu.com/rest/2.0/pcs/file";
     private static final String DEFAULT_UPLOAD_SERVER = "https://d.pcs.baidu.com";
     private static final int LIST_PAGE = 1000;
 
@@ -162,6 +163,19 @@ public class PanClient {
                 XPAN_FILE + "?method=create&access_token=" + accessToken, form));
         checkErrno(node, "合并文件失败: " + path);
         return node.path("fs_id").asLong();
+    }
+
+    /**
+     * 服务端复制单个文件到目标路径(保留原文件名或指定新名), 不产生上传流量.
+     * 使用旧版 PCS 接口: 个人网盘应用的 xpan filemanager copy 返回 errno=2 无权限, PCS copy 可用.
+     */
+    public void copy(String fromPath, String toPath) {
+        JsonNode node = Json.parse(http.get(PCS_FILE + "?method=copy&access_token=" + accessToken
+                + "&from=" + encode(fromPath) + "&to=" + encode(toPath)));
+        if (node.has("error_code")) {
+            throw new PanException(node.path("error_code").asInt(),
+                    "云端复制失败 " + fromPath + ": " + node.path("error_msg").asText(""));
+        }
     }
 
     /** 删除远程文件(官方 async 参数: 0 强制同步, 便于逐文件校验结果). */

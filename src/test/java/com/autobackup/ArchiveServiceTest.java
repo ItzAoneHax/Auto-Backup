@@ -102,9 +102,13 @@ class ArchiveServiceTest {
         ArchiveService.ArchiveResult result = new ArchiveService()
                 .createArchive(source, "data", base, List.of(), 64 * 1024 * 1024, LogService.consoleOnly());
 
+        // 未超限: 单卷不携带 .part001 后缀, 保持完整可直解的 .tar.gz 名称
         org.junit.jupiter.api.Assertions.assertEquals(1, result.parts().size());
-        org.junit.jupiter.api.Assertions.assertEquals("one.tar.gz.part001",
+        org.junit.jupiter.api.Assertions.assertEquals("one.tar.gz",
                 result.parts().get(0).getFileName().toString());
+        org.junit.jupiter.api.Assertions.assertFalse(Files.exists(base.resolveSibling("one.tar.gz.part001")));
+        List<String> entries = readEntries(base);
+        org.junit.jupiter.api.Assertions.assertTrue(entries.contains("data/a.txt"));
     }
 
     /** 随机内容不可压缩, 保证归档体积稳定超过分卷阈值. */
