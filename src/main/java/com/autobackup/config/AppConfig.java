@@ -6,7 +6,9 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.YearMonth;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -128,6 +130,21 @@ public final class AppConfig {
 
     public String monthlyDir() {
         return remoteDir + "/monthly";
+    }
+
+    /** 某天的 daily 日期文件夹: daily/2026-08-27, 其下按服务器名再分目录. */
+    public String dailyDayDir(LocalDate date) {
+        return dailyDir() + "/" + date;
+    }
+
+    /** 某服务器当月的月度快照目录: monthly/2026-08/<serverName>. */
+    public String monthlyServerDir(String serverName) {
+        return monthlyDir() + "/" + YearMonth.now() + "/" + serverName;
+    }
+
+    /** 某服务器当年的年度快照目录: yearly/2026/<serverName>. */
+    public String yearlyServerDir(String serverName) {
+        return yearlyDir() + "/" + LocalDate.now().getYear() + "/" + serverName;
     }
 
     public Path configFile() { return configFile; }

@@ -15,12 +15,15 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 /**
  * 一次完整备份流程:
- * 打包 → 逐个上传 daily 目录 → 年度留档 → 云端过期清理 → 本地清理 → 上传运行日志.
+ * 打包 → 按日期+服务器目录逐个上传 daily → 月度/年度快照 → 快照补全核对 → 云端过期清理
+ * → 本地清理 → 上传运行日志.
  * 单个备份源失败不影响其他源, 任一失败则本次运行记为失败.
  */
 public class BackupService {
@@ -88,15 +91,14 @@ public class BackupService {
         boolean allOk = true;
         try {
             Files.createDirectories(config.workDir());
-            String dailyDir = config.dailyDir();
-            pan.mkdirs(dailyDir);
-            pan.mkdirs(config.monthlyDir());
-            pan.mkdirs(config.yearlyDir());
+            String dayDir = config.dailyDayDir(LocalDate.now());
+            pan.mkdirs(dayDir);
             Uploader uploader = new Uploader(pan, config, log);
             RetentionService retention = new RetentionService(pan, config, log);
 
             List<Path> sources = config.sources().stream().map(Path::of).toList();
             List<String> names = sourceNames(sources, log);
+            Map<String, List<String>> uploadedDailyFiles = new LinkedHashMap<>();
             for (int i = 0; i < sources.size(); i++) {
                 Path source = sources.get(i);
                 String name = names.get(i);
@@ -109,14 +111,17 @@ public class BackupService {
                     parts = result.parts();
                     log.info("打包完成: " + archiveBase.getFileName() + " (共 " + parts.size() + " 个分卷, "
                             + result.totalSize() / 1048576 + " MB, " + result.fileCount() + " 个文件)");
+                    String serverDir = dayDir + "/" + name;
+                    pan.mkdirs(serverDir);
                     List<String> remotePaths = new ArrayList<>();
                     for (Path part : parts) {
-                        String remote = dailyDir + "/" + part.getFileName();
+                        String remote = serverDir + "/" + part.getFileName();
                         uploader.upload(part, remote);
                         remotePaths.add(remote);
                     }
                     retention.ensureMonthlySnapshot(uploader, parts, remotePaths, name);
                     retention.ensureYearlySnapshot(uploader, parts, remotePaths, name);
+                    uploadedDailyFiles.put(name, remotePaths);
                     deleteLocal(parts);
                 } catch (Exception e) {
                     deleteLocal(parts);   // 上传失败的分卷留在本地也没有价值(下次运行会重新打包)
@@ -126,7 +131,13 @@ public class BackupService {
             }
 
             try {
-                retention.cleanExpiredDaily(dailyDir);
+                retention.backfillSnapshots(uploadedDailyFiles);
+            } catch (Exception e) {
+                log.warn("快照补全核对失败: " + e.getMessage());
+            }
+
+            try {
+                retention.cleanExpiredDaily(config.dailyDir());
             } catch (Exception e) {
                 log.error("云端过期清理失败: " + e.getMessage(), e);
                 allOk = false;
@@ -153,13 +164,15 @@ public class BackupService {
         }
     }
 
-    /** 把本次运行日志上传到 daily 目录, 与当日备份文件同期清理. */
+    /** 把本次运行日志上传到当日日期文件夹根部, 与当日全部服务器备份同期清理. */
     private void uploadRunLog(Path logFile) {
         LogService console = LogService.consoleOnly();
         try {
             TokenInfo token = oauth.ensureValidToken();
             PanClient pan = new PanClient(token.accessToken(), http);
-            new Uploader(pan, config, console).upload(logFile, config.dailyDir() + "/" + logFile.getFileName());
+            String dayDir = config.dailyDayDir(LocalDate.now());
+            pan.mkdirs(dayDir);   // 已存在不报错, 仅防极端情况(跨午夜)目录未创建
+            new Uploader(pan, config, console).upload(logFile, dayDir + "/" + logFile.getFileName());
             console.info("运行日志已上传: " + logFile.getFileName());
         } catch (Exception e) {
             console.warn("运行日志上传失败(不影响备份结果): " + e.getMessage());

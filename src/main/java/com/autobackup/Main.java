@@ -118,13 +118,35 @@ public final class Main {
 
     private static void printDirSummary(PanClient pan, String dir, String label) {
         try {
-            List<RemoteFile> files = pan.list(dir);
-            long count = files.stream().filter(f -> !f.dir()).count();
-            long bytes = files.stream().filter(f -> !f.dir()).mapToLong(RemoteFile::size).sum();
-            System.out.println(label + ": " + dir + " (" + count + " 个文件, " + bytes / 1048576 + " MB)");
+            long[] stats = countFilesRecursively(pan, dir);
+            System.out.println(label + ": " + dir
+                    + " (" + stats[0] + " 个文件, " + stats[1] / 1048576 + " MB)");
         } catch (Exception e) {
             System.out.println(label + ": " + dir + " (尚不存在, 首次备份时自动创建)");
         }
+    }
+
+    /** 目录按日期+服务器分层后文件不再位于根下, 递归统计文件数与总字节(限深防异常结构). */
+    private static long[] countFilesRecursively(PanClient pan, String dir) {
+        return countFilesRecursively(pan, dir, 0);
+    }
+
+    private static long[] countFilesRecursively(PanClient pan, String dir, int depth) {
+        long count = 0;
+        long bytes = 0;
+        if (depth < 5) {
+            for (RemoteFile f : pan.list(dir)) {
+                if (f.dir()) {
+                    long[] sub = countFilesRecursively(pan, f.path(), depth + 1);
+                    count += sub[0];
+                    bytes += sub[1];
+                } else {
+                    count++;
+                    bytes += f.size();
+                }
+            }
+        }
+        return new long[]{count, bytes};
     }
 
     /** 调试用: 列出网盘任意目录, 常用于发现个人应用的应用目录名(ls /apps). */

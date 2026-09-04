@@ -17,3 +17,6 @@ config/token.json
 .idea/
 *.iml
 .vscode/
+
+# ZCode 本地会话目录
+.zcode/
