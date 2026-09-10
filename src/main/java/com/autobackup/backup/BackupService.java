@@ -22,8 +22,8 @@ import java.util.stream.Stream;
 
 /**
  * 一次完整备份流程:
- * 打包 → 按日期+服务器目录逐个上传 daily → 月度/年度快照 → 快照补全核对 → 云端过期清理
- * → 本地清理 → 上传运行日志.
+ * 打包(全量或增量) → 按日期+服务器目录逐个上传 daily → 增量日补齐当日文件夹的完整恢复链(云端复制)
+ * → 月度/年度快照 → 快照补全核对 → 云端过期清理 → 本地清理 → 上传运行日志.
  * 单个备份源失败不影响其他源, 任一失败则本次运行记为失败.
  */
 public class BackupService {
@@ -105,12 +105,21 @@ public class BackupService {
                 log.section("备份源 [" + (i + 1) + "/" + sources.size() + "]: " + source);
                 List<Path> parts = List.of();
                 try {
-                    Path archiveBase = config.workDir().resolve(name + "-" + runId + ".tar.gz");
+                    SourceManifest prev = config.incrementalEnabled()
+                            ? SourceManifest.load(manifestPath(name), source, log) : null;
+                    String fullReason = !config.incrementalEnabled()
+                            ? "增量备份未启用" : fullBackupReason(prev, name, retention);
+                    boolean full = fullReason != null;
+                    if (full) log.info("本次全量备份: " + fullReason);
+                    Path archiveBase = config.workDir().resolve(name + "-" + runId
+                            + (full ? "" : ".inc") + "." + config.compression().extension());
                     ArchiveService.ArchiveResult result = archiveService.createArchive(
-                            source, name, archiveBase, config.excludes(), config.splitSizeBytes(), log);
+                            source, name, archiveBase, config.excludes(), config.splitSizeBytes(),
+                            config.compression(), full ? null : prev.files(), log);
                     parts = result.parts();
                     log.info("打包完成: " + archiveBase.getFileName() + " (共 " + parts.size() + " 个分卷, "
-                            + result.totalSize() / 1048576 + " MB, " + result.fileCount() + " 个文件)");
+                            + result.totalSize() / 1048576 + " MB, 归档 " + result.fileCount()
+                            + "/" + result.scannedCount() + " 个文件)");
                     String serverDir = dayDir + "/" + name;
                     pan.mkdirs(serverDir);
                     List<String> remotePaths = new ArrayList<>();
@@ -121,6 +130,12 @@ public class BackupService {
                     }
                     retention.ensureMonthlySnapshot(uploader, parts, remotePaths, name);
                     retention.ensureYearlySnapshot(uploader, parts, remotePaths, name);
+                    saveManifest(source, name, prev, result, full, log);
+                    if (!full) {
+                        // 增量日: 把"上次全量 + 其后增量"云端复制进今日文件夹,
+                        // 保证每天下载整个日期文件夹即可解压出当日完整服务端(复制零流量)
+                        retention.mirrorChainIntoToday(name, serverDir, prev.lastFullDate());
+                    }
                     uploadedDailyFiles.put(name, remotePaths);
                     deleteLocal(parts);
                 } catch (Exception e) {
@@ -161,6 +176,49 @@ public class BackupService {
             } catch (IOException e) {
                 // 清理失败不影响本次备份结果, 残留分卷随 workDir 人工清理
             }
+        }
+    }
+
+    /** 备份源对应的本地增量清单路径. */
+    private Path manifestPath(String name) {
+        return config.workDir().resolve("manifests").resolve(name + ".json");
+    }
+
+    /**
+     * 返回该源本次需要走全量的原因; null 表示可以走增量.
+     * 月度/年度快照缺失时强制全量, 保证快照目录里的批次自包含、可脱离 daily 链独立恢复,
+     * 同时天然覆盖"月中新增备份源"与"上次快照复制中断"两种补全场景.
+     */
+    private String fullBackupReason(SourceManifest prev, String name, RetentionService retention) {
+        if (prev == null || prev.lastFullDate() == null) return "无可用的增量清单";
+        long days = java.time.temporal.ChronoUnit.DAYS.between(prev.lastFullDate(), LocalDate.now());
+        if (days >= config.fullIntervalDays()) {
+            return "距上次全量已 " + days + " 天 (全量间隔 " + config.fullIntervalDays() + " 天)";
+        }
+        if (config.monthlyEnabled() && retention.snapshotPending(config.monthlyServerDir(name))) {
+            return "本月月度快照缺失, 快照需自包含";
+        }
+        if (config.yearlyEnabled() && retention.snapshotPending(config.yearlyServerDir(name))) {
+            return "本年度年度快照缺失, 快照需自包含";
+        }
+        return null;
+    }
+
+    /**
+     * 上传成功后写入新的增量清单: 文件戳取本次扫描结果,
+     * 全量基准日期在走全量时重置为今天, 走增量时沿用旧清单的基准.
+     */
+    private void saveManifest(Path source, String name, SourceManifest prev,
+                              ArchiveService.ArchiveResult result, boolean full, LogService log) {
+        if (!config.incrementalEnabled()) return;
+        LocalDate baseDate = full || prev == null || prev.lastFullDate() == null
+                ? LocalDate.now() : prev.lastFullDate();
+        try {
+            new SourceManifest(source.toAbsolutePath().normalize().toString(), baseDate, result.stamps())
+                    .save(manifestPath(name));
+            log.info("增量清单已更新: " + result.stamps().size() + " 个文件, 全量基准 " + baseDate);
+        } catch (IOException e) {
+            throw new IllegalStateException("增量清单写入失败: " + e.getMessage(), e);
         }
     }
 

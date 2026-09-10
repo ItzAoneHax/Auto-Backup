@@ -165,6 +165,68 @@ class RetentionServiceTest {
         assertTrue(uploader.uploads.contains("newsrc-2026-09-05_030000.tar.gz.part001"));
     }
 
+    // ---- 每日文件夹自包含恢复链 ----
+
+    @Test
+    void mirrorsFullAndPriorIncrementalsIntoTodayFolder(@TempDir Path temp) throws IOException {
+        AppConfig config = testConfig(temp);
+        FakePan pan = new FakePan();
+        LocalDate today = LocalDate.now();
+        // 两天前的全量(含两个分卷) + 昨天的增量; 中间跳过一天(该日无备份)
+        String fullDay = config.dailyDayDir(today.minusDays(2)) + "/newsrc";
+        pan.put(fullDay, "newsrc-" + today.minusDays(2) + "_030000.tar.zst",
+                "newsrc-" + today.minusDays(2) + "_030000.tar.zst.part002");
+        String incDay = config.dailyDayDir(today.minusDays(1)) + "/newsrc";
+        pan.put(incDay, "newsrc-" + today.minusDays(1) + "_030000.inc.tar.zst",
+                "backup-" + today.minusDays(1) + "_030000.log");   // 日志不应被复制
+        String todayDir = config.dailyDayDir(today) + "/newsrc";
+        pan.put(todayDir, "newsrc-" + today + "_030000.inc.tar.zst");   // 今日增量已上传
+
+        new RetentionService(pan, config, LogService.consoleOnly())
+                .mirrorChainIntoToday("newsrc", todayDir, today.minusDays(2));
+
+        assertTrue(pan.copiedTo(todayDir + "/newsrc-" + today.minusDays(2) + "_030000.tar.zst"));
+        assertTrue(pan.copiedTo(todayDir + "/newsrc-" + today.minusDays(2) + "_030000.tar.zst.part002"));
+        assertTrue(pan.copiedTo(todayDir + "/newsrc-" + today.minusDays(1) + "_030000.inc.tar.zst"));
+        assertEquals(3, pan.copies.size());   // 日志与今日已有的增量不会被复制
+    }
+
+    @Test
+    void skipsMirroringWhenChainHasNoFullArchive(@TempDir Path temp) throws IOException {
+        AppConfig config = testConfig(temp);
+        FakePan pan = new FakePan();
+        LocalDate today = LocalDate.now();
+        // 锚定日只有增量没有全量(链已断), 不应复制任何东西
+        pan.put(config.dailyDayDir(today.minusDays(1)) + "/newsrc",
+                "newsrc-" + today.minusDays(1) + "_030000.inc.tar.zst");
+        String todayDir = config.dailyDayDir(today) + "/newsrc";
+
+        new RetentionService(pan, config, LogService.consoleOnly())
+                .mirrorChainIntoToday("newsrc", todayDir, today.minusDays(2));
+
+        assertTrue(pan.copies.isEmpty());
+    }
+
+    @Test
+    void ignoresArchivesOfOtherSources(@TempDir Path temp) throws IOException {
+        AppConfig config = testConfig(temp);
+        FakePan pan = new FakePan();
+        LocalDate today = LocalDate.now();
+        // 同文件夹里混入其他源的归档(前缀不同), 不应复制
+        String fullDay = config.dailyDayDir(today.minusDays(1)) + "/newsrc";
+        pan.put(fullDay, "newsrc-" + today.minusDays(1) + "_030000.tar.zst",
+                "other-2026-01-01_030000.tar.zst", "newsrc-残缺文件.tar.zst");
+        String todayDir = config.dailyDayDir(today) + "/newsrc";
+        pan.put(todayDir, "newsrc-" + today + "_030000.inc.tar.zst");
+
+        new RetentionService(pan, config, LogService.consoleOnly())
+                .mirrorChainIntoToday("newsrc", todayDir, today.minusDays(1));
+
+        assertTrue(pan.copiedTo(todayDir + "/newsrc-" + today.minusDays(1) + "_030000.tar.zst"));
+        assertTrue(pan.copies.stream().noneMatch(c -> c[1].contains("other-")));
+        assertTrue(pan.copies.stream().noneMatch(c -> c[1].contains("残缺文件")));
+    }
+
     // ---- 测试基础设施 ----
 
     private static String dailyPath(String source, String file) {

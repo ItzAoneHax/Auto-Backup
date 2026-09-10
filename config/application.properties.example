@@ -28,6 +28,9 @@ backup.sources=/data
 backup.dailyTime=03:00
 
 # 云端 daily 目录保留天数(至多留存近 N 天, 含日志文件)
+# 注意: 增量备份开启时, 实际保留天数会自动取
+#   max(保留天数, 全量间隔天数 + 2)
+# 以保证"最近一次全量 + 其后增量"的恢复链始终完整
 backup.retainDays=3
 
 # 每年第一次成功备份时, 在云端复制一份到 yearly 目录永久保留
@@ -50,6 +53,31 @@ backup.logRetainDays=30
 # 上传成功后删除本地归档文件(false 则保留在 workDir 中)
 backup.deleteLocalArchive=true
 
+# ---------- 增量备份(可选提速模式, 默认关闭) ----------
+# 默认每天全量: 每个服务器每天在云端就是一个完整的 .tar.zst, 下载解压即用。
+# 开启后每天只打包与上次相比有变化(新增/修改)的文件, 显著减少上传时间;
+# 每隔 fullIntervalDays 天做一次全量; 程序会把"最近一次全量 + 其后增量"云端复制
+# (零上传流量)进当天的日期文件夹, 因此任意一天的日期文件夹仍是自包含的,
+# 下载后把服务器子文件夹里的全部归档按文件名顺序解压即得当日完整服务端:
+#   for f in xxx-*.tar.zst; do tar --zstd -xf "$f"; done
+# 月度/年度快照目录为空时会自动强制全量, 保证快照可独立恢复。
+backup.incremental.enabled=false
+
+# 两次全量备份的间隔天数(1-365)
+backup.incremental.fullIntervalDays=7
+
+# ---------- 压缩算法 ----------
+# tar 归档的压缩算法: zstd(默认, 多线程, 数百 MB/s)或 gzip(兼容旧版, 单线程)
+# zstd 归档后缀为 .tar.zst, 解压: tar --zstd -xf xxx.tar.zst (需系统装有 zstd)
+# gzip 归档后缀为 .tar.gz, 解压: tar -xzf xxx.tar.gz
+archive.compressor=zstd
+
+# zstd 压缩级别 1-22, 常用 3: 速度与压缩率的平衡点, 数值越大压缩越狠但越慢
+archive.zstdLevel=3
+
+# zstd 压缩线程数, 0 = 自动取 CPU 核数
+archive.zstdWorkers=0
+
 # ---------- 上传参数 ----------
 # 分片大小(MB)。官方限制与账号等级挂钩:
 #   普通用户: 分片固定 4MB, 单文件上限 4GB
@@ -60,6 +88,10 @@ upload.chunkSizeMB=4
 
 # 分片上传失败重试次数
 upload.retries=3
+
+# 分片并发上传数(1-16)。官方 FAQ 明确支持分片并发, 能明显缩短大文件上传时间;
+# 并发越高失败率越高(已有分片级重试兜底), 建议 4-8, 观察日志中的失败重试再调整
+upload.parallelChunks=4
 
 # ---------- 归档分卷 ----------
 # 单个分卷的最大体积(MB), 0 表示不分卷。

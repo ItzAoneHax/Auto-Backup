@@ -1,8 +1,10 @@
 package com.autobackup.backup;
 
+import com.github.luben.zstd.ZstdOutputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream;
+import org.apache.commons.compress.compressors.gzip.GzipParameters;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -16,28 +18,63 @@ import java.nio.file.PathMatcher;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
-/** 将本地目录打包为 tar.gz, 支持 glob 排除规则与分卷(超过单文件上限时切为多个分卷文件). */
+/**
+ * 将本地目录打包为 tar.zst(或 tar.gz), 支持 glob 排除规则、增量归档
+ * (previousStamps 非 null 时只打包与上次清单不一致的文件)与分卷(超过单文件上限时切为多个分卷文件).
+ */
 public class ArchiveService {
 
     private static final int COPY_BUFFER = 64 * 1024;
 
+    /** 压缩算法与参数; algorithm 为 "zstd" 或 "gzip", extension() 为对应归档后缀. */
+    public record Compression(String algorithm, int level, int workers) {
+
+        public static final String ZSTD = "zstd";
+        public static final String GZIP = "gzip";
+
+        /** 兼容旧版本的 gzip 参数(默认级别, 单线程). */
+        public static Compression gzip() {
+            return new Compression(GZIP, -1, 1);
+        }
+
+        public String extension() {
+            return ZSTD.equals(algorithm) ? "tar.zst" : "tar.gz";
+        }
+
+        /** 实际使用的 zstd 工作线程数(0 表示按 CPU 核数取). */
+        public int effectiveWorkers() {
+            if (!ZSTD.equals(algorithm)) return 1;
+            return workers > 0 ? workers : Runtime.getRuntime().availableProcessors();
+        }
+    }
+
     /**
      * @param splitBytes 单个分卷的最大字节数, 0 表示不分卷(整个归档写成一个文件);
      *                   大于 0 时输出 base.part001、base.part002...(base 即传入的 targetFile 路径),
-     *                   各分卷按顺序拼接后与完整 tar.gz 字节一致
+     *                   各分卷按顺序拼接后与完整压缩流字节一致
+     * @param previousStamps 上次归档的文件清单(相对路径 → size+mtime 戳), null 表示全量;
+     *                      非 null 时 size 与 mtime 均未变化的文件跳过不入包
      */
-    public record ArchiveResult(List<Path> parts, long totalSize, int fileCount) {}
+    public record ArchiveResult(List<Path> parts, long totalSize, int fileCount,
+                                int scannedCount, Map<String, SourceManifest.Stamp> stamps) {}
 
     public ArchiveResult createArchive(Path sourceDir, String rootName, Path targetFile,
-                                       List<String> excludeGlobs, long splitBytes, LogService log) throws IOException {
+                                       List<String> excludeGlobs, long splitBytes,
+                                       Compression compression, Map<String, SourceManifest.Stamp> previousStamps,
+                                       LogService log) throws IOException {
         List<PathMatcher> matchers = compileGlobs(excludeGlobs);
         int[] count = {0};
+        int[] scanned = {0};
+        Map<String, SourceManifest.Stamp> stamps = new HashMap<>();
+        boolean incremental = previousStamps != null;
         SplitOutputStream split = new SplitOutputStream(targetFile, splitBytes);
         try (OutputStream ignored = split;
-             GzipCompressorOutputStream gzip = new GzipCompressorOutputStream(split);
-             TarArchiveOutputStream tar = new TarArchiveOutputStream(gzip)) {
+             OutputStream compressed = compressedStream(split, compression);
+             TarArchiveOutputStream tar = new TarArchiveOutputStream(compressed)) {
             tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
             tar.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_POSIX);
             addDirEntry(tar, rootName);
@@ -59,6 +96,13 @@ public class ArchiveService {
                         return FileVisitResult.CONTINUE;
                     }
                     if (!attrs.isRegularFile()) return FileVisitResult.CONTINUE;
+                    scanned[0]++;
+                    SourceManifest.Stamp cur =
+                            new SourceManifest.Stamp(attrs.size(), attrs.lastModifiedTime().toMillis());
+                    stamps.put(rel, cur);
+                    if (incremental && cur.equals(previousStamps.get(rel))) {
+                        return FileVisitResult.CONTINUE;   // size 与 mtime 均未变化, 跳过
+                    }
                     TarArchiveEntry entry = new TarArchiveEntry(rootName + "/" + rel);
                     entry.setSize(attrs.size());
                     entry.setModTime(attrs.lastModifiedTime().toMillis());
@@ -83,11 +127,23 @@ public class ArchiveService {
         }
         List<Path> parts = split.parts();
         if (splitBytes > 0 && parts.size() == 1) {
-            // 未超过分卷阈值时去掉 .part001 后缀, 云端与本地均为完整可直解的 .tar.gz
+            // 未超过分卷阈值时去掉 .part001 后缀, 云端与本地均为完整可直解的压缩归档
             Files.move(parts.get(0), targetFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             parts = List.of(targetFile);
         }
-        return new ArchiveResult(parts, split.totalBytes(), count[0]);
+        return new ArchiveResult(parts, split.totalBytes(), count[0], scanned[0], stamps);
+    }
+
+    private static OutputStream compressedStream(OutputStream out, Compression c) throws IOException {
+        if (Compression.ZSTD.equals(c.algorithm())) {
+            ZstdOutputStream zstd = new ZstdOutputStream(out, c.level());
+            zstd.setWorkers(c.effectiveWorkers());   // 必须在写入数据前设置
+            zstd.setChecksum(true);
+            return zstd;
+        }
+        GzipParameters params = new GzipParameters();
+        if (c.level() > 0) params.setCompressionLevel(c.level());
+        return new GzipCompressorOutputStream(out, params);
     }
 
     /**

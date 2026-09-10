@@ -210,12 +210,13 @@ public class PanClient {
      * (取 servers 中任意 https 域名, 结果约 60 秒有效), 获取失败时回退默认域名.
      */
     /** 定位出的上传域名连不上时调用, 一段时间内改用默认域名. */
-    public void invalidateUploadServer() {
+    public synchronized void invalidateUploadServer() {
         uploadServerCache = null;
         skipLocatedUntil = System.currentTimeMillis() + 10 * 60_000L;
     }
 
-    private String uploadServer(String path, String uploadId) {
+    /** 分片并发上传时多线程共用本实例, 域名缓存读写需互斥. */
+    private synchronized String uploadServer(String path, String uploadId) {
         long now = System.currentTimeMillis();
         if (now < skipLocatedUntil) {
             return DEFAULT_UPLOAD_SERVER;

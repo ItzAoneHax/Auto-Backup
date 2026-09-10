@@ -16,10 +16,18 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 分片上传: 计算分片 md5 → 预上传(precreate) → 逐片上传(superfile2) → 合并(create).
  * 单个文件最多 1024 个分片(4MB 分片即上限 4GB).
+ * 分片可并发上传(官方 FAQ 明确支持; 并发越高失败率越高, 已配分片级重试兜底),
+ * 任一分片最终失败则整个文件上传失败, 令牌过期不在分片层处理, 交由上层整体重试.
  */
 public class Uploader {
 
@@ -44,8 +52,10 @@ public class Uploader {
                     + "或配置 upload.splitSizeMB 分卷使单个文件不超过账号单文件上限");
         }
 
+        int parallel = config.uploadParallelChunks();
         log.info("开始上传 " + localFile.getFileName() + " -> " + remotePath
-                + " (" + size + " 字节, " + Math.max(chunkCount, 1) + " 个分片)");
+                + " (" + size + " 字节, " + Math.max(chunkCount, 1) + " 个分片"
+                + (parallel > 1 ? ", 并发 " + parallel : "") + ")");
         List<String> blockList = computeBlockList(localFile, chunkSize);
         PrecreateResult pre = pan.precreate(remotePath, size, blockList);
         if (pre.rapidUpload()) {
@@ -54,13 +64,57 @@ public class Uploader {
         }
         // 官方文档: 预上传返回的 block_list 为空数组时等价于 [0], 仍需上传第 0 片
         List<Integer> parts = pre.parts().isEmpty() ? List.of(0) : pre.parts();
-        for (int seq : parts) {
-            byte[] chunk = readChunk(localFile, seq, chunkSize);
-            uploadChunkWithRetry(remotePath, pre.uploadId(), seq, chunk, blockList.get(seq));
-        }
+        uploadParts(localFile, remotePath, pre.uploadId(), parts, blockList, chunkSize);
         long fsId = pan.create(remotePath, size, pre.uploadId(), blockList);
         log.info("上传完成: fs_id=" + fsId);
         return fsId;
+    }
+
+    /** 串行或并发上传全部待传分片; 任一分片最终失败时抛出其异常. */
+    private void uploadParts(Path file, String remotePath, String uploadId, List<Integer> parts,
+                             List<String> blockList, int chunkSize) throws IOException {
+        int parallel = Math.max(1, Math.min(config.uploadParallelChunks(), parts.size()));
+        if (parallel == 1) {
+            for (int seq : parts) {
+                byte[] chunk = readChunk(file, seq, chunkSize);
+                uploadChunkWithRetry(remotePath, uploadId, seq, chunk, blockList.get(seq));
+            }
+            return;
+        }
+        ExecutorService pool = Executors.newFixedThreadPool(parallel);
+        AtomicReference<RuntimeException> failure = new AtomicReference<>();
+        AtomicInteger done = new AtomicInteger();
+        try {
+            List<Future<?>> futures = new ArrayList<>();
+            for (int seq : parts) {
+                futures.add(pool.submit(() -> {
+                    if (failure.get() != null) return;   // 已有分片失败, 快速跳过剩余任务
+                    try {
+                        byte[] chunk = readChunk(file, seq, chunkSize);
+                        uploadChunkWithRetry(remotePath, uploadId, seq, chunk, blockList.get(seq));
+                        done.incrementAndGet();
+                    } catch (IOException e) {
+                        failure.compareAndSet(null, new IllegalStateException(
+                                "分片读取失败 seq=" + seq + ": " + e.getMessage(), e));
+                    } catch (RuntimeException e) {
+                        failure.compareAndSet(null, e);
+                    }
+                }));
+            }
+            try {
+                for (Future<?> f : futures) f.get();
+            } catch (ExecutionException e) {
+                // 任务内部已捕获全部异常, 这里只防御性兜底
+                throw new IllegalStateException("分片上传任务异常: " + e.getCause().getMessage(), e.getCause());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("上传被中断", e);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        if (failure.get() != null) throw failure.get();
+        log.info("全部分片上传完成: " + done.get() + "/" + parts.size());
     }
 
     /** 单次流式读取, 计算每个分片的 md5(小写十六进制). */

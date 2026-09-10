@@ -32,6 +32,10 @@ public class RetentionService {
     /** 文件名中形如 2026-08-23 的日期(旧版扁平备份与运行日志的文件名均内嵌运行日期). */
     static final Pattern EMBEDDED_DATE = Pattern.compile("(\\d{4}-\\d{2}-\\d{2})");
 
+    /** 本程序生成的归档文件名: {服务器名}-{yyyy-MM-dd_HHmmss}[.inc].tar.(zst|gz)[.partNNN]. */
+    private static final Pattern ARCHIVE_NAME =
+            Pattern.compile("%s-\\d{4}-\\d{2}-\\d{2}_\\d{6}(\\.inc)?\\.tar\\.(zst|gz)(\\.part\\d{3})?");
+
     private final PanClient pan;
     private final AppConfig config;
     private final LogService log;
@@ -43,12 +47,17 @@ public class RetentionService {
     }
 
     /**
-     * 清理 daily 目录中早于「今天-保留天数+1」的内容:
+     * 清理 daily 目录中早于「今天-有效保留天数+1」的内容:
      * 新结构的整天日期文件夹直接删除, 旧版扁平文件按内嵌日期逐个删除, 其他一律不动.
+     * 增量模式下有效保留天数为 max(保留天数, 全量间隔+2), 确保增量恢复链完整.
      */
     public void cleanExpiredDaily(String dailyDir) {
         List<RemoteFile> entries = pan.list(dailyDir);
-        LocalDate cutoff = LocalDate.now().minusDays(Math.max(config.retainDays() - 1L, 0));
+        int effective = config.effectiveRetainDays();
+        if (effective != config.retainDays()) {
+            log.info("增量模式保留天数取 max(保留天数, 全量间隔+2) = " + effective);
+        }
+        LocalDate cutoff = LocalDate.now().minusDays(Math.max(effective - 1L, 0));
         List<String> toDelete = new ArrayList<>();
         for (RemoteFile entry : entries) {
             LocalDate date = entry.dir() ? parseDayFolder(entry.name()) : parseEmbeddedDate(entry.name());
@@ -56,13 +65,80 @@ public class RetentionService {
             if (date.isBefore(cutoff)) toDelete.add(entry.path());
         }
         if (toDelete.isEmpty()) {
-            log.info("云端清理: 没有过期内容 (保留近 " + config.retainDays() + " 天)");
+            log.info("云端清理: 没有过期内容 (保留近 " + effective + " 天)");
             return;
         }
         pan.delete(toDelete);
         for (String path : toDelete) {
             log.info("云端清理: 已删除过期备份 " + path);
         }
+    }
+
+    /**
+     * 快照目录尚无任何文件(或不存在/不可读)时返回 true.
+     * 用于月初/年初第一次备份前判断: 本期快照缺失则强制全量, 保证快照自包含可独立恢复.
+     */
+    public boolean snapshotPending(String snapshotDir) {
+        try {
+            return pan.list(snapshotDir).isEmpty();
+        } catch (RuntimeException e) {
+            return true;
+        }
+    }
+
+    /**
+     * 把自上次全量以来的完整恢复链(全量归档 + 其后各增量归档, 含分卷)云端复制进今天的服务器文件夹,
+     * 使每天下载整个日期文件夹、按文件名顺序解压全部归档, 即可得到当日时刻的完整服务端
+     * (增量只含变化文件, 后解压的覆盖先解压的同名文件).
+     * 云端复制不产生上传流量; 保留窗口(全量间隔+2 天)已覆盖整条链.
+     */
+    public void mirrorChainIntoToday(String sourceName, String todayServerDir, LocalDate lastFullDate) {
+        if (lastFullDate == null) return;
+        try {
+            Set<String> present = new HashSet<>();
+            for (RemoteFile f : pan.list(todayServerDir)) {
+                present.add(f.name());
+            }
+            boolean sawFull = false;
+            List<RemoteFile> chain = new ArrayList<>();
+            LocalDate today = LocalDate.now();
+            for (LocalDate d = lastFullDate; !d.isAfter(today); d = d.plusDays(1)) {
+                if (d.equals(today)) continue;   // 今日文件刚上传, 已在文件夹内
+                List<RemoteFile> files;
+                try {
+                    files = pan.list(config.dailyDayDir(d) + "/" + sourceName);
+                } catch (RuntimeException e) {
+                    continue;   // 当日该源无备份(未运行或失败), 链上允许有缺口
+                }
+                for (RemoteFile f : files) {
+                    if (!isSourceArchive(sourceName, f.name())) continue;
+                    if (!f.name().contains(".inc.")) sawFull = true;
+                    chain.add(f);
+                }
+            }
+            if (!sawFull) {
+                log.warn("恢复链不完整: 未找到 " + lastFullDate + " 以来的全量归档, 今日文件夹无法自包含");
+                return;
+            }
+            int copied = 0;
+            for (RemoteFile f : chain) {
+                if (present.contains(f.name())) continue;
+                pan.copy(f.path(), todayServerDir + "/" + f.name());
+                present.add(f.name());
+                copied++;
+            }
+            if (copied > 0) {
+                log.info("今日文件夹已补齐完整恢复链(云端复制 " + copied + " 个归档, 零上传流量)");
+            }
+        } catch (Exception e) {
+            log.warn("恢复链补齐失败: " + e.getMessage() + " (不影响备份结果, 明日运行会重试)");
+        }
+    }
+
+    /** 文件名是否为该源由本程序生成的归档(全量或增量, 含分卷). */
+    private static boolean isSourceArchive(String sourceName, String filename) {
+        return Pattern.compile(ARCHIVE_NAME.pattern().formatted(Pattern.quote(sourceName)))
+                .matcher(filename).matches();
     }
 
     /** 每月第一次成功备份后, 云端复制一份到 monthly/&lt;yyyy-MM&gt;/&lt;服务器名&gt;(永不清理). */

@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
+import com.autobackup.backup.ArchiveService;
 
 /** 全部可自定义配置项, 从 properties 文件加载, 含默认值与校验. */
 public final class AppConfig {
@@ -35,6 +36,12 @@ public final class AppConfig {
     private final int chunkSizeMB;
     private final int splitSizeMB;
     private final int uploadRetries;
+    private final int uploadParallelChunks;
+    private final String compressor;
+    private final int zstdLevel;
+    private final int zstdWorkers;
+    private final boolean incrementalEnabled;
+    private final int fullIntervalDays;
     private final Path tokenFile;
 
     private AppConfig(Path configFile, Properties props) {
@@ -55,6 +62,12 @@ public final class AppConfig {
         this.chunkSizeMB = intProp(props, "upload.chunkSizeMB", 4);
         this.splitSizeMB = intProp(props, "upload.splitSizeMB", 0);
         this.uploadRetries = intProp(props, "upload.retries", 3);
+        this.uploadParallelChunks = intProp(props, "upload.parallelChunks", 4);
+        this.compressor = props.getProperty("archive.compressor", ArchiveService.Compression.ZSTD).trim();
+        this.zstdLevel = intProp(props, "archive.zstdLevel", 3);
+        this.zstdWorkers = intProp(props, "archive.zstdWorkers", 0);
+        this.incrementalEnabled = boolProp(props, "backup.incremental.enabled", false);
+        this.fullIntervalDays = intProp(props, "backup.incremental.fullIntervalDays", 7);
         this.tokenFile = this.configFile.resolveSibling("token.json");
     }
 
@@ -88,8 +101,24 @@ public final class AppConfig {
             problems.add("upload.chunkSizeMB 需为 4-32 之间 4 的倍数");
         }
         if (uploadRetries < 1) problems.add("upload.retries 不能小于 1");
+        if (uploadParallelChunks < 1 || uploadParallelChunks > 16) {
+            problems.add("upload.parallelChunks 需为 1-16(官方支持分片并发, 但并发越高失败率越高, 建议 4-8)");
+        }
         if (splitSizeMB != 0 && (splitSizeMB < 64 || splitSizeMB > 20480)) {
             problems.add("upload.splitSizeMB 需为 0(不分卷)或 64-20480 之间的 MB 数(不超过账号单文件上限)");
+        }
+        if (!ArchiveService.Compression.ZSTD.equals(compressor)
+                && !ArchiveService.Compression.GZIP.equals(compressor)) {
+            problems.add("archive.compressor 仅支持 zstd 或 gzip, 当前: " + compressor);
+        }
+        if (zstdLevel < 1 || zstdLevel > 22) {
+            problems.add("archive.zstdLevel 需为 1-22(常用 3, 数值越大压缩越狠越慢)");
+        }
+        if (zstdWorkers < 0 || zstdWorkers > 128) {
+            problems.add("archive.zstdWorkers 需为 0(自动取 CPU 核数)或 1-128");
+        }
+        if (fullIntervalDays < 1 || fullIntervalDays > 365) {
+            problems.add("backup.incremental.fullIntervalDays 需为 1-365 之间的天数");
         }
         try {
             LocalTime.parse(dailyTime);
@@ -108,7 +137,12 @@ public final class AppConfig {
                 + ", 每日时间=" + dailyTime + ", 保留天数=" + retainDays
                 + ", 年度备份=" + yearlyEnabled + ", 月度备份=" + monthlyEnabled
                 + ", 分片=" + chunkSizeMB + "MB"
-                + ", 分卷=" + (splitSizeMB == 0 ? "关闭" : splitSizeMB + "MB") + ", 重试=" + uploadRetries;
+                + ", 分卷=" + (splitSizeMB == 0 ? "关闭" : splitSizeMB + "MB")
+                + ", 重试=" + uploadRetries
+                + ", 上传并发=" + uploadParallelChunks
+                + ", 压缩=" + compressor + (ArchiveService.Compression.ZSTD.equals(compressor)
+                        ? "(级别 " + zstdLevel + ", 线程 " + compression().effectiveWorkers() + ")" : "")
+                + ", 增量=" + (incrementalEnabled ? "开(全量间隔 " + fullIntervalDays + " 天)" : "关(每天全量)");
     }
 
     public int chunkSizeBytes() {
@@ -164,7 +198,27 @@ public final class AppConfig {
     public int chunkSizeMB() { return chunkSizeMB; }
     public int splitSizeMB() { return splitSizeMB; }
     public int uploadRetries() { return uploadRetries; }
+    public int uploadParallelChunks() { return uploadParallelChunks; }
+    public String compressor() { return compressor; }
+    public int zstdLevel() { return zstdLevel; }
+    public int zstdWorkers() { return zstdWorkers; }
+    public boolean incrementalEnabled() { return incrementalEnabled; }
+    public int fullIntervalDays() { return fullIntervalDays; }
     public Path tokenFile() { return tokenFile; }
+
+    /** 归档压缩参数. */
+    public ArchiveService.Compression compression() {
+        if (ArchiveService.Compression.GZIP.equals(compressor)) return ArchiveService.Compression.gzip();
+        return new ArchiveService.Compression(ArchiveService.Compression.ZSTD, zstdLevel, zstdWorkers);
+    }
+
+    /**
+     * 增量模式下 daily 的实际保留天数: 全量间隔 + 2 天(保证"最近一次全量 + 其后增量"的恢复链
+     * 始终完整, 并容忍一次全量失败), 不低于用户配置的保留天数。
+     */
+    public int effectiveRetainDays() {
+        return incrementalEnabled ? Math.max(retainDays, fullIntervalDays + 2) : retainDays;
+    }
 
     private static String normalizeRemote(String dir) {
         if (dir.isBlank()) return "";
