@@ -31,6 +31,11 @@ public class StateStore {
         return props.getProperty("lastRunDate");
     }
 
+    /** 上次运行是否成功(尚未运行过时为 null). */
+    public synchronized String lastRunOk() {
+        return props.getProperty("lastRunOk");
+    }
+
     public synchronized void recordRun(LocalDate date, boolean ok) {
         props.setProperty("lastRunDate", date.toString());
         props.setProperty("lastRunOk", Boolean.toString(ok));

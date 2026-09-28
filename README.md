@@ -131,7 +131,8 @@ journalctl -u auto-backup -f                # 实时看运行日志
 | 场景 | 操作 |
 | --- | --- |
 | 查看每次备份的详细日志 | 服务器 `logs/` 目录, 或网盘 `daily/` 目录里的 `.log` |
-| 临时备份某个目录(不改配置) | `java -jar auto-backup.jar run /path/to/dir` (可多个, 空格分隔; 固定全量上传到当日 daily 目录, 到期随日常清理删除, 不影响定时任务) |
+| 临时备份某个目录(不改配置) | daemon 运行中在终端/面板控制台输入 `run /path/to/dir`(可多个空格分隔, 含空格路径用引号包裹); 或命令行 `java -jar auto-backup.jar run /path/to/dir`。固定全量上传到当日 daily 目录, 到期随日常清理删除, 不影响定时任务 |
+| 查看备份状态 | 面板/终端控制台输入 `status`(上次运行结果、是否执行中); `help` 查看全部控制台命令 |
 | 修改备份目录/时间/保留天数 | 改 `config/application.properties` 后 `sudo systemctl restart auto-backup` |
 | 长期停用后令牌失效(提示重新 login) | 再执行一次第 3 步, 然后 `sudo systemctl restart auto-backup` |
 | 升级程序 | 替换 jar 后 `sudo systemctl restart auto-backup` |

@@ -7,6 +7,7 @@ import com.autobackup.backup.BackupService;
 import com.autobackup.config.AppConfig;
 import com.autobackup.pan.PanClient;
 import com.autobackup.pan.RemoteFile;
+import com.autobackup.scheduler.DaemonConsole;
 import com.autobackup.scheduler.DailyScheduler;
 import com.autobackup.util.HttpUtil;
 import com.autobackup.util.InstanceLock;
@@ -26,7 +27,8 @@ import java.util.List;
  * java -jar auto-backup.jar verify         # 检查凭证/容量/远程目录
  * java -jar auto-backup.jar run            # 立即执行一次备份(适合配到系统 cron)
  * java -jar auto-backup.jar run /data/foo  # 临时备份指定目录, 可多个空格分隔
- * java -jar auto-backup.jar daemon         # 常驻进程, 每天 backup.dailyTime 自动备份(适合 systemd)
+ * java -jar auto-backup.jar daemon         # 常驻进程, 每天 backup.dailyTime 自动备份(适合 systemd/面板托管)
+ *                                         #   daemon 运行中支持控制台命令: run [路径...] / status / exit
  * </pre>
  */
 public final class Main {
@@ -211,6 +213,9 @@ public final class Main {
         StateStore state = new StateStore(config.workDir().resolve("state.properties"));
         BackupService backup = new BackupService(config, http, oauth, state);
         try (InstanceLock ignored = InstanceLock.acquire(config.workDir().resolve("auto-backup.lock"))) {
+            Thread console = new Thread(new DaemonConsole(backup, config, state), "daemon-console");
+            console.setDaemon(true);
+            console.start();
             new DailyScheduler(config, backup, state).runForever();
         }
         return true;
@@ -229,7 +234,8 @@ public final class Main {
                   run 路径  临时备份指定目录, 可多个空格分隔: 固定全量上传到当日 daily 目录,
                            到期随日常清理删除; 不写增量清单、不生成快照、不触发云端清理,
                            也不影响当日定时备份
-                  daemon   常驻进程, 每天 backup.dailyTime 自动备份(适合 systemd)
+                  daemon   常驻进程, 每天 backup.dailyTime 自动备份(适合 systemd / 面板托管);
+                           运行中可在终端输入 help/status/run 控制台命令(如 run "/data/含空格 目录")
                   ls       列出网盘目录(调试用, 例: ls /apps)
                   help     显示本帮助
 

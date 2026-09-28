@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
 /**
@@ -38,6 +39,10 @@ public class BackupService {
     private final StateStore state;
     private final ArchiveService archiveService = new ArchiveService();
 
+    /** 序列化定时备份与控制台触发的备份, 避免两个流程同时打包/上传. */
+    private final ReentrantLock runLock = new ReentrantLock(true);
+    private volatile boolean running;
+
     public BackupService(AppConfig config, HttpUtil http, OAuthService oauth, StateStore state) {
         this.config = config;
         this.http = http;
@@ -47,7 +52,7 @@ public class BackupService {
 
     /** 执行一次常规备份(配置中的 backup.sources), 返回是否全部成功; 运行日志写入本地并尽力上传到云端. */
     public boolean runOnce() {
-        return run(false);
+        return run(false, null);
     }
 
     /**
@@ -56,10 +61,32 @@ public class BackupService {
      * 也不记录调度状态(否则守护进程会把当天真正的定时备份当成已跑过而跳过).
      */
     public boolean runAdhoc() {
-        return run(true);
+        return run(true, null);
     }
 
-    private boolean run(boolean adhoc) {
+    /** 守护进程控制台触发的临时备份: 显式指定备份源(已在调用方完成路径校验). */
+    public boolean runAdhoc(List<String> sources) {
+        return run(true, sources);
+    }
+
+    /** 是否有备份正在执行(控制台 status/exit 命令用). */
+    public boolean isRunning() {
+        return running;
+    }
+
+    private boolean run(boolean adhoc, List<String> adhocSources) {
+        runLock.lock();
+        running = true;
+        try {
+            return doRun(adhoc, adhocSources);
+        } finally {
+            running = false;
+            runLock.unlock();
+        }
+    }
+
+    private boolean doRun(boolean adhoc, List<String> adhocSources) {
+        List<String> sourcePaths = adhocSources != null ? adhocSources : config.sources();
         String runId = LocalDateTime.now().format(RUN_ID);
         Path logFile;
         boolean ok;
@@ -68,8 +95,11 @@ public class BackupService {
             try {
                 log.section((adhoc ? "临时备份开始" : "自动备份开始") + " runId=" + runId);
                 log.info("配置: " + config.maskedSummary());
+                if (adhocSources != null) {
+                    log.info("备份源(临时指定): " + adhocSources);
+                }
                 TokenInfo token = oauth.ensureValidToken();
-                ok = executeWithTokenRetry(token, log, runId, adhoc);
+                ok = executeWithTokenRetry(token, log, runId, adhoc, sourcePaths);
             } catch (Exception e) {
                 log.error("备份失败: " + e.getMessage(), e);
                 ok = false;
@@ -92,18 +122,20 @@ public class BackupService {
     }
 
     /** 令牌在备份中途过期时自动刷新并整体重试一次. */
-    private boolean executeWithTokenRetry(TokenInfo token, LogService log, String runId, boolean adhoc) {
+    private boolean executeWithTokenRetry(TokenInfo token, LogService log, String runId,
+                                          boolean adhoc, List<String> sourcePaths) {
         try {
-            return execute(new PanClient(token.accessToken(), http), log, runId, adhoc);
+            return execute(new PanClient(token.accessToken(), http), log, runId, adhoc, sourcePaths);
         } catch (PanException e) {
             if (!e.isTokenExpired()) throw e;
             log.warn("访问令牌已过期, 自动刷新后重试");
             TokenInfo fresh = oauth.refresh(token);
-            return execute(new PanClient(fresh.accessToken(), http), log, runId, adhoc);
+            return execute(new PanClient(fresh.accessToken(), http), log, runId, adhoc, sourcePaths);
         }
     }
 
-    private boolean execute(PanClient pan, LogService log, String runId, boolean adhoc) {
+    private boolean execute(PanClient pan, LogService log, String runId,
+                            boolean adhoc, List<String> sourcePaths) {
         long start = System.currentTimeMillis();
         boolean allOk = true;
         try {
@@ -113,7 +145,7 @@ public class BackupService {
             Uploader uploader = new Uploader(pan, config, log);
             RetentionService retention = new RetentionService(pan, config, log);
 
-            List<Path> sources = config.sources().stream().map(Path::of).toList();
+            List<Path> sources = sourcePaths.stream().map(Path::of).toList();
             List<String> names = sourceNames(sources, log);
             Map<String, List<String>> uploadedDailyFiles = new LinkedHashMap<>();
             for (int i = 0; i < sources.size(); i++) {
