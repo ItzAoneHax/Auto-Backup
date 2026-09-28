@@ -76,6 +76,20 @@ public final class Main {
                 listRemote(config, rest.get(0));
                 yield 0;
             }
+            case "cp" -> {
+                List<String> rest = argsAfterCommand(args);
+                if (rest.size() != 2) {
+                    throw new IllegalStateException("用法: cp <源远程路径> <目标远程路径>  例: cp /apps/a/x.tar.zst /apps/b/x.tar.zst");
+                }
+                cloudCopy(config, rest.get(0), rest.get(1));
+                yield 0;
+            }
+            case "rm" -> {
+                List<String> rest = argsAfterCommand(args);
+                if (rest.isEmpty()) throw new IllegalStateException("用法: rm <远程路径>...  (云端删除, 不可恢复, 慎用)");
+                cloudDelete(config, rest);
+                yield 0;
+            }
             default -> {
                 printHelp();
                 yield "help".equals(command) ? 0 : 2;
@@ -116,6 +130,8 @@ public final class Main {
         if (!config.remoteDir().isBlank()) {
             printDirSummary(pan, config.dailyDir(), "daily 目录(每日备份, 到期自动清理)");
             printDirSummary(pan, config.yearlyDir(), "yearly 目录(每年一份, 永久保留)");
+            printDirSummary(pan, config.monthlyDir(), "monthly 目录(每月一份, 永久保留)");
+            printDirSummary(pan, config.adhocDir(), "adhoc 目录(临时备份, 不自动清理)");
         }
         System.out.println("[OK] 验证通过");
     }
@@ -169,6 +185,29 @@ public final class Main {
         }
     }
 
+    /** 运维用: 云端复制(PCS copy, 服务端执行零上传流量), 目标父目录不存在时自动创建. */
+    private static void cloudCopy(Path configPath, String from, String to) throws Exception {
+        AppConfig config = AppConfig.load(configPath);
+        HttpUtil http = new HttpUtil();
+        OAuthService oauth = new OAuthService(config, http, new TokenStore(config.tokenFile()));
+        PanClient pan = new PanClient(oauth.ensureValidToken().accessToken(), http);
+        pan.mkdirs(to.substring(0, to.lastIndexOf('/')));
+        pan.copy(from, to);
+        System.out.println("[OK] 已复制: " + from + " -> " + to);
+    }
+
+    /** 运维用: 云端删除(xpan filemanager), 不可恢复. */
+    private static void cloudDelete(Path configPath, List<String> paths) throws Exception {
+        AppConfig config = AppConfig.load(configPath);
+        HttpUtil http = new HttpUtil();
+        OAuthService oauth = new OAuthService(config, http, new TokenStore(config.tokenFile()));
+        PanClient pan = new PanClient(oauth.ensureValidToken().accessToken(), http);
+        pan.delete(paths);
+        for (String p : paths) {
+            System.out.println("[OK] 已删除: " + p);
+        }
+    }
+
     /** 命令之后的所有非选项参数(run 的备份路径列表, ls 的远程路径). */
     private static List<String> argsAfterCommand(String[] args) {
         List<String> rest = new ArrayList<>();
@@ -186,8 +225,9 @@ public final class Main {
 
     /**
      * 立即执行一次备份. 不带路径时备份配置中的 backup.sources;
-     * 带路径时为临时备份: 用命令行路径替换备份源, 固定全量上传到当日 daily 目录,
-     * 不写增量清单、不生成快照、不触发云端清理, 也不影响当日定时备份.
+     * 带路径时为临时备份: 用命令行路径替换备份源, 固定全量上传到当日 adhoc 目录
+     * (不参与过期清理, 长期保留), 不写增量清单、不生成快照、不触发云端清理,
+     * 也不影响当日定时备份.
      */
     private static boolean runOnce(Path configPath, List<String> adhocPaths) throws Exception {
         AppConfig config = AppConfig.load(configPath);
@@ -231,12 +271,14 @@ public final class Main {
                   login    首次授权登录(设备码方式, 只需一次)
                   verify   检查凭证、网盘容量与远程目录
                   run      立即执行一次备份(适合配置到系统 crontab)
-                  run 路径  临时备份指定目录, 可多个空格分隔: 固定全量上传到当日 daily 目录,
-                           到期随日常清理删除; 不写增量清单、不生成快照、不触发云端清理,
+                  run 路径  临时备份指定目录, 可多个空格分隔: 固定全量上传到当日 adhoc 目录,
+                           不参与过期清理、长期保留; 不写增量清单、不生成快照、不触发云端清理,
                            也不影响当日定时备份
                   daemon   常驻进程, 每天 backup.dailyTime 自动备份(适合 systemd / 面板托管);
                            运行中可在终端输入 help/status/run 控制台命令(如 run "/data/含空格 目录")
                   ls       列出网盘目录(调试用, 例: ls /apps)
+                  cp       云端复制文件(服务端零流量, 例: cp /apps/a/x.tar.zst /apps/b/x.tar.zst)
+                  rm       云端删除文件(不可恢复, 慎用, 例: rm /apps/a/x.tar.zst)
                   help     显示本帮助
 
                 默认配置文件: config/application.properties (相对当前工作目录)

@@ -31,6 +31,7 @@ class AppConfigTest {
         assertEquals(List.of(dir.toString()), copy.sources());
         assertEquals("k", copy.appKey());
         assertEquals("/apps/backup", copy.remoteDir());
+        assertEquals("/apps/backup/adhoc/2026-09-28", copy.adhocDayDir(java.time.LocalDate.of(2026, 9, 28)));
         assertEquals(5, copy.retainDays());
         assertEquals(base.tokenFile(), copy.tokenFile());
 

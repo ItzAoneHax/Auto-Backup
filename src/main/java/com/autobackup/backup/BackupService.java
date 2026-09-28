@@ -27,7 +27,8 @@ import java.util.stream.Stream;
  * → 月度/年度快照 → 快照补全核对 → 云端过期清理 → 本地清理 → 上传运行日志.
  * 单个备份源失败不影响其他源, 任一失败则本次运行记为失败.
  *
- * <p>临时备份({@link #runAdhoc()})只走其中"打包 → 上传 daily"一段, 不碰其余环节.</p>
+ * <p>临时备份({@link #runAdhoc()})只走其中"打包 → 上传 adhoc"一段: 归档进
+ * {@code adhoc/<日期>/<目录名>/}, 与 daily 结构相同但永不参与过期清理, 长期保留.</p>
  */
 public class BackupService {
 
@@ -56,7 +57,7 @@ public class BackupService {
     }
 
     /**
-     * 临时备份(命令行指定路径): 固定全量, 只打包并上传到当日 daily 目录, 到期随日常清理一起删除.
+     * 临时备份(命令行指定路径): 固定全量, 打包上传到当日 adhoc 目录(与 daily 同构, 但不参与过期清理).
      * 不写增量清单(避免污染同名备份源的增量链)、不生成月度/年度快照、不触发云端清理,
      * 也不记录调度状态(否则守护进程会把当天真正的定时备份当成已跑过而跳过).
      */
@@ -90,7 +91,7 @@ public class BackupService {
         String runId = LocalDateTime.now().format(RUN_ID);
         Path logFile;
         boolean ok;
-        try (LogService log = new LogService(config.logDir(), runId)) {
+        try (LogService log = new LogService(config.logDir(), adhoc ? "adhoc-" : "backup-", runId)) {
             logFile = log.file();
             try {
                 log.section((adhoc ? "临时备份开始" : "自动备份开始") + " runId=" + runId);
@@ -117,7 +118,7 @@ public class BackupService {
             return false;
         }
         // 日志文件此时已写完并关闭, 上传的是完整内容
-        uploadRunLog(logFile);
+        uploadRunLog(logFile, adhoc);
         return ok;
     }
 
@@ -140,7 +141,8 @@ public class BackupService {
         boolean allOk = true;
         try {
             Files.createDirectories(config.workDir());
-            String dayDir = config.dailyDayDir(LocalDate.now());
+            // 临时备份进 adhoc/<日期>/, 与 daily 结构一致但永不自动清理
+            String dayDir = adhoc ? config.adhocDayDir(LocalDate.now()) : config.dailyDayDir(LocalDate.now());
             pan.mkdirs(dayDir);
             Uploader uploader = new Uploader(pan, config, log);
             RetentionService retention = new RetentionService(pan, config, log);
@@ -281,13 +283,13 @@ public class BackupService {
         }
     }
 
-    /** 把本次运行日志上传到当日日期文件夹根部, 与当日全部服务器备份同期清理. */
-    private void uploadRunLog(Path logFile) {
+    /** 把本次运行日志上传到对应目录根部: 常规随 daily 同期清理, 临时进 adhoc 长期保留. */
+    private void uploadRunLog(Path logFile, boolean adhoc) {
         LogService console = LogService.consoleOnly();
         try {
             TokenInfo token = oauth.ensureValidToken();
             PanClient pan = new PanClient(token.accessToken(), http);
-            String dayDir = config.dailyDayDir(LocalDate.now());
+            String dayDir = adhoc ? config.adhocDayDir(LocalDate.now()) : config.dailyDayDir(LocalDate.now());
             pan.mkdirs(dayDir);   // 已存在不报错, 仅防极端情况(跨午夜)目录未创建
             new Uploader(pan, config, console).upload(logFile, dayDir + "/" + logFile.getFileName());
             console.info("运行日志已上传: " + logFile.getFileName());

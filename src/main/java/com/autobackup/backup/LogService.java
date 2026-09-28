@@ -21,8 +21,13 @@ public final class LogService implements AutoCloseable {
     private int errors = 0;
 
     public LogService(Path logDir, String runId) throws IOException {
+        this(logDir, "backup-", runId);
+    }
+
+    /** prefix 区分常规(backup-)与临时(adhoc-)运行日志. */
+    public LogService(Path logDir, String prefix, String runId) throws IOException {
         Files.createDirectories(logDir);
-        this.logFile = logDir.resolve("backup-" + runId + ".log");
+        this.logFile = logDir.resolve(prefix + runId + ".log");
         this.writer = new PrintWriter(Files.newBufferedWriter(this.logFile, StandardCharsets.UTF_8), true);
     }
 

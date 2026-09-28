@@ -99,7 +99,8 @@ public final class DaemonConsole implements Runnable {
     private void printHelp() {
         System.out.println("""
                 [控制台] 可用命令:
-                  run [路径...]  立即备份; 带路径时临时备份指定目录(可多个, 含空格的路径用引号包裹), 不带则备份配置中的 backup.sources
+                  run [路径...]  立即备份; 带路径时临时备份指定目录(可多个, 含空格的路径用引号包裹),
+                                 归档进 adhoc/ 日期目录长期保留, 不自动清理; 不带则备份配置中的 backup.sources
                   status         查看上次运行结果与当前状态
                   help           显示本帮助
                   exit           退出守护进程""");

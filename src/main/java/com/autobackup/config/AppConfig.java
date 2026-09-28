@@ -198,6 +198,16 @@ public final class AppConfig {
         return remoteDir + "/monthly";
     }
 
+    /** 临时备份根目录: 与 daily 结构相同, 但不参与过期清理, 长期保留. */
+    public String adhocDir() {
+        return remoteDir + "/adhoc";
+    }
+
+    /** 临时备份某天的日期文件夹: adhoc/2026-09-28, 其下按目录名再分. */
+    public String adhocDayDir(LocalDate date) {
+        return adhocDir() + "/" + date;
+    }
+
     /** 某天的 daily 日期文件夹: daily/2026-08-27, 其下按服务器名再分目录. */
     public String dailyDayDir(LocalDate date) {
         return dailyDir() + "/" + date;
