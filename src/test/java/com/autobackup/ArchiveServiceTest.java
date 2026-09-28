@@ -265,4 +265,22 @@ class ArchiveServiceTest {
         }
         return entries;
     }
+
+    @org.junit.jupiter.api.Test
+    void copyTruncatesGrownFileAndPadsShrunkFile() throws Exception {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        // 头部声明 4 字节, 实际流 6 字节(打包期间被追加) → 只写出前 4 字节
+        ArchiveService.copy(new java.io.ByteArrayInputStream("abcdef".getBytes()),
+                out, 4, "growing.log", LogService.consoleOnly());
+        org.junit.jupiter.api.Assertions.assertEquals("abcd", out.toString());
+
+        // 头部声明 6 字节, 实际流 3 字节(打包期间被截短) → 零补齐到 6 字节
+        java.io.ByteArrayOutputStream padded = new java.io.ByteArrayOutputStream();
+        ArchiveService.copy(new java.io.ByteArrayInputStream("abc".getBytes()),
+                padded, 6, "shrunk.log", LogService.consoleOnly());
+        byte[] bytes = padded.toByteArray();
+        org.junit.jupiter.api.Assertions.assertEquals(6, bytes.length);
+        org.junit.jupiter.api.Assertions.assertEquals('a', bytes[0]);
+        org.junit.jupiter.api.Assertions.assertEquals(0, bytes[5]);
+    }
 }

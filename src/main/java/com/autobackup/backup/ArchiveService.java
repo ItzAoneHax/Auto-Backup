@@ -108,7 +108,7 @@ public class ArchiveService {
                     entry.setModTime(attrs.lastModifiedTime().toMillis());
                     tar.putArchiveEntry(entry);
                     try (InputStream in = Files.newInputStream(file)) {
-                        copy(in, tar);
+                        copy(in, tar, attrs.size(), rel, log);
                     }
                     tar.closeArchiveEntry();
                     count[0]++;
@@ -251,11 +251,31 @@ public class ArchiveService {
         return base.relativize(p).toString().replace('\\', '/');
     }
 
-    private static void copy(InputStream in, OutputStream out) throws IOException {
+    /**
+     * 拷贝至多 limit 字节. 头部尺寸取自打包前的文件属性, 而活跃文件(如服务器日志)在读取期间
+     * 可能被追加或截短(日志轮转): 追加则截断到初始尺寸, 截短则零补齐, 保证 tar 流始终自洽,
+     * 单个文件的临时变化不再导致整个备份源失败.
+     */
+    public static void copy(InputStream in, OutputStream out, long limit, String rel, LogService log)
+            throws IOException {
         byte[] buffer = new byte[COPY_BUFFER];
+        long written = 0;
         int n;
-        while ((n = in.read(buffer)) != -1) {
+        while (written < limit
+                && (n = in.read(buffer, 0, (int) Math.min(buffer.length, limit - written))) != -1) {
             out.write(buffer, 0, n);
+            written += n;
+        }
+        if (written < limit) {
+            byte[] zeros = new byte[COPY_BUFFER];
+            while (written < limit) {
+                int len = (int) Math.min(zeros.length, limit - written);
+                out.write(zeros, 0, len);
+                written += len;
+            }
+            log.warn("打包期间文件被截短(可能发生日志轮转), 差异部分零补齐: " + rel);
+        } else if (in.read() != -1) {
+            log.warn("打包期间文件被追加, 已截断到初始尺寸: " + rel);
         }
     }
 }
