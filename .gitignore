@@ -20,3 +20,4 @@ config/token.json
 
 # ZCode 本地会话目录
 .zcode/
+.zcodeignore
