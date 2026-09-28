@@ -83,6 +83,38 @@ public final class AppConfig {
         return new AppConfig(file, props);
     }
 
+    /** 命令行临时指定备份源(run 路径): 返回替换 sources 后的副本, 其余配置原样保留. */
+    public AppConfig withSources(List<String> override) {
+        return new AppConfig(this, List.copyOf(override));
+    }
+
+    private AppConfig(AppConfig base, List<String> sources) {
+        this.configFile = base.configFile;
+        this.appKey = base.appKey;
+        this.secretKey = base.secretKey;
+        this.remoteDir = base.remoteDir;
+        this.sources = sources;
+        this.excludes = base.excludes;
+        this.dailyTime = base.dailyTime;
+        this.retainDays = base.retainDays;
+        this.yearlyEnabled = base.yearlyEnabled;
+        this.monthlyEnabled = base.monthlyEnabled;
+        this.workDir = base.workDir;
+        this.logDir = base.logDir;
+        this.logRetainDays = base.logRetainDays;
+        this.deleteLocalArchive = base.deleteLocalArchive;
+        this.chunkSizeMB = base.chunkSizeMB;
+        this.splitSizeMB = base.splitSizeMB;
+        this.uploadRetries = base.uploadRetries;
+        this.uploadParallelChunks = base.uploadParallelChunks;
+        this.compressor = base.compressor;
+        this.zstdLevel = base.zstdLevel;
+        this.zstdWorkers = base.zstdWorkers;
+        this.incrementalEnabled = base.incrementalEnabled;
+        this.fullIntervalDays = base.fullIntervalDays;
+        this.tokenFile = base.tokenFile;
+    }
+
     /** 校验备份所需的关键配置, 有问题时一次性列出全部问题. */
     public void validateForBackup() {
         List<String> problems = new ArrayList<>();

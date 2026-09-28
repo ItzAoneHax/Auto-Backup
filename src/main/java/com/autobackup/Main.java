@@ -15,16 +15,18 @@ import com.autobackup.util.StateStore;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * 命令行入口.
  *
  * <pre>
- * java -jar auto-backup.jar login    # 首次授权登录(设备码方式, 只需一次)
- * java -jar auto-backup.jar verify   # 检查凭证/容量/远程目录
- * java -jar auto-backup.jar run      # 立即执行一次备份(适合配到系统 cron)
- * java -jar auto-backup.jar daemon   # 常驻进程, 每天 backup.dailyTime 自动备份(适合 systemd)
+ * java -jar auto-backup.jar login          # 首次授权登录(设备码方式, 只需一次)
+ * java -jar auto-backup.jar verify         # 检查凭证/容量/远程目录
+ * java -jar auto-backup.jar run            # 立即执行一次备份(适合配到系统 cron)
+ * java -jar auto-backup.jar run /data/foo  # 临时备份指定目录, 可多个空格分隔
+ * java -jar auto-backup.jar daemon         # 常驻进程, 每天 backup.dailyTime 自动备份(适合 systemd)
  * </pre>
  */
 public final class Main {
@@ -64,12 +66,12 @@ public final class Main {
                 verify(config);
                 yield 0;
             }
-            case "run" -> runOnce(config) ? 0 : 1;
+            case "run" -> runOnce(config, argsAfterCommand(args)) ? 0 : 1;
             case "daemon" -> daemon(config) ? 0 : 1;
             case "ls" -> {
-                String remotePath = firstNonFlagArg(args);
-                if (remotePath == null) throw new IllegalStateException("用法: ls <远程路径>  例: ls /apps");
-                listRemote(config, remotePath);
+                List<String> rest = argsAfterCommand(args);
+                if (rest.isEmpty()) throw new IllegalStateException("用法: ls <远程路径>  例: ls /apps");
+                listRemote(config, rest.get(0));
                 yield 0;
             }
             default -> {
@@ -165,23 +167,39 @@ public final class Main {
         }
     }
 
-    /** 取第一个非选项、非命令的参数(如 ls 的路径). */
-    private static String firstNonFlagArg(String[] args) {
+    /** 命令之后的所有非选项参数(run 的备份路径列表, ls 的远程路径). */
+    private static List<String> argsAfterCommand(String[] args) {
+        List<String> rest = new ArrayList<>();
+        boolean commandSeen = false;
         for (String arg : args) {
-            if (!arg.startsWith("-") && !"ls".equals(arg)) return arg;
+            if (arg.startsWith("-")) continue;
+            if (!commandSeen) {
+                commandSeen = true;   // 第一个非选项参数是命令本身
+                continue;
+            }
+            rest.add(arg);
         }
-        return null;
+        return List.copyOf(rest);
     }
 
-    private static boolean runOnce(Path configPath) throws Exception {
+    /**
+     * 立即执行一次备份. 不带路径时备份配置中的 backup.sources;
+     * 带路径时为临时备份: 用命令行路径替换备份源, 固定全量上传到当日 daily 目录,
+     * 不写增量清单、不生成快照、不触发云端清理, 也不影响当日定时备份.
+     */
+    private static boolean runOnce(Path configPath, List<String> adhocPaths) throws Exception {
         AppConfig config = AppConfig.load(configPath);
+        boolean adhoc = !adhocPaths.isEmpty();
+        if (adhoc) {
+            config = config.withSources(adhocPaths);
+        }
         config.validateForBackup();
         HttpUtil http = new HttpUtil();
         OAuthService oauth = new OAuthService(config, http, new TokenStore(config.tokenFile()));
         StateStore state = new StateStore(config.workDir().resolve("state.properties"));
         BackupService backup = new BackupService(config, http, oauth, state);
         try (InstanceLock ignored = InstanceLock.acquire(config.workDir().resolve("auto-backup.lock"))) {
-            return backup.runOnce();
+            return adhoc ? backup.runAdhoc() : backup.runOnce();
         }
     }
 
@@ -208,6 +226,9 @@ public final class Main {
                   login    首次授权登录(设备码方式, 只需一次)
                   verify   检查凭证、网盘容量与远程目录
                   run      立即执行一次备份(适合配置到系统 crontab)
+                  run 路径  临时备份指定目录, 可多个空格分隔: 固定全量上传到当日 daily 目录,
+                           到期随日常清理删除; 不写增量清单、不生成快照、不触发云端清理,
+                           也不影响当日定时备份
                   daemon   常驻进程, 每天 backup.dailyTime 自动备份(适合 systemd)
                   ls       列出网盘目录(调试用, 例: ls /apps)
                   help     显示本帮助

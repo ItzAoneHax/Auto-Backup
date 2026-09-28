@@ -9,6 +9,7 @@
 ## 功能特性
 
 - **自动备份**: 常驻进程每天在设定时间自动执行; 也支持外部 crontab 调用
+- **临时单次备份**: `java -jar auto-backup.jar run /任意目录` 不改配置即可临时备份指定目录(可多个空格分隔), 固定全量上传到当日 daily 目录, 不影响定时任务与增量备份链
 - **每天一个完整文件**: 默认每天全量, 每个备份源(服务器)当天在云端就是一个完整的 `.tar.zst`, 下载解压即用, 无需拼接
 - **zstd 多线程压缩**: 默认 `tar.zst` 归档(线程数自动取 CPU 核数, 比单线程 gzip 快一个数量级, 压缩率略优), 可配置回退 `gzip` 兼容旧版
 - **分片并发上传**: 官方 FAQ 明确支持分片并发, 默认 4 并发(1-16 可调), 显著缩短大文件上传时间; 分片级重试+指数退避兜底
@@ -130,6 +131,7 @@ journalctl -u auto-backup -f                # 实时看运行日志
 | 场景 | 操作 |
 | --- | --- |
 | 查看每次备份的详细日志 | 服务器 `logs/` 目录, 或网盘 `daily/` 目录里的 `.log` |
+| 临时备份某个目录(不改配置) | `java -jar auto-backup.jar run /path/to/dir` (可多个, 空格分隔; 固定全量上传到当日 daily 目录, 到期随日常清理删除, 不影响定时任务) |
 | 修改备份目录/时间/保留天数 | 改 `config/application.properties` 后 `sudo systemctl restart auto-backup` |
 | 长期停用后令牌失效(提示重新 login) | 再执行一次第 3 步, 然后 `sudo systemctl restart auto-backup` |
 | 升级程序 | 替换 jar 后 `sudo systemctl restart auto-backup` |

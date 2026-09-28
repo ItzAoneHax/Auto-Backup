@@ -25,6 +25,8 @@ import java.util.stream.Stream;
  * 打包(全量或增量) → 按日期+服务器目录逐个上传 daily → 增量日补齐当日文件夹的完整恢复链(云端复制)
  * → 月度/年度快照 → 快照补全核对 → 云端过期清理 → 本地清理 → 上传运行日志.
  * 单个备份源失败不影响其他源, 任一失败则本次运行记为失败.
+ *
+ * <p>临时备份({@link #runAdhoc()})只走其中"打包 → 上传 daily"一段, 不碰其余环节.</p>
  */
 public class BackupService {
 
@@ -43,18 +45,31 @@ public class BackupService {
         this.state = state;
     }
 
-    /** 执行一次备份, 返回是否全部成功; 运行日志写入本地并尽力上传到云端. */
+    /** 执行一次常规备份(配置中的 backup.sources), 返回是否全部成功; 运行日志写入本地并尽力上传到云端. */
     public boolean runOnce() {
+        return run(false);
+    }
+
+    /**
+     * 临时备份(命令行指定路径): 固定全量, 只打包并上传到当日 daily 目录, 到期随日常清理一起删除.
+     * 不写增量清单(避免污染同名备份源的增量链)、不生成月度/年度快照、不触发云端清理,
+     * 也不记录调度状态(否则守护进程会把当天真正的定时备份当成已跑过而跳过).
+     */
+    public boolean runAdhoc() {
+        return run(true);
+    }
+
+    private boolean run(boolean adhoc) {
         String runId = LocalDateTime.now().format(RUN_ID);
         Path logFile;
         boolean ok;
         try (LogService log = new LogService(config.logDir(), runId)) {
             logFile = log.file();
             try {
-                log.section("自动备份开始 runId=" + runId);
+                log.section((adhoc ? "临时备份开始" : "自动备份开始") + " runId=" + runId);
                 log.info("配置: " + config.maskedSummary());
                 TokenInfo token = oauth.ensureValidToken();
-                ok = executeWithTokenRetry(token, log, runId);
+                ok = executeWithTokenRetry(token, log, runId, adhoc);
             } catch (Exception e) {
                 log.error("备份失败: " + e.getMessage(), e);
                 ok = false;
@@ -64,7 +79,9 @@ public class BackupService {
             } else {
                 log.error("本次备份存在失败项, 请检查上方日志");
             }
-            state.recordRun(LocalDate.now(), ok);
+            if (!adhoc) {
+                state.recordRun(LocalDate.now(), ok);
+            }
         } catch (IOException e) {
             System.err.println("[ERROR] 无法创建日志文件: " + e.getMessage());
             return false;
@@ -75,18 +92,18 @@ public class BackupService {
     }
 
     /** 令牌在备份中途过期时自动刷新并整体重试一次. */
-    private boolean executeWithTokenRetry(TokenInfo token, LogService log, String runId) {
+    private boolean executeWithTokenRetry(TokenInfo token, LogService log, String runId, boolean adhoc) {
         try {
-            return execute(new PanClient(token.accessToken(), http), log, runId);
+            return execute(new PanClient(token.accessToken(), http), log, runId, adhoc);
         } catch (PanException e) {
             if (!e.isTokenExpired()) throw e;
             log.warn("访问令牌已过期, 自动刷新后重试");
             TokenInfo fresh = oauth.refresh(token);
-            return execute(new PanClient(fresh.accessToken(), http), log, runId);
+            return execute(new PanClient(fresh.accessToken(), http), log, runId, adhoc);
         }
     }
 
-    private boolean execute(PanClient pan, LogService log, String runId) {
+    private boolean execute(PanClient pan, LogService log, String runId, boolean adhoc) {
         long start = System.currentTimeMillis();
         boolean allOk = true;
         try {
@@ -105,10 +122,16 @@ public class BackupService {
                 log.section("备份源 [" + (i + 1) + "/" + sources.size() + "]: " + source);
                 List<Path> parts = List.of();
                 try {
-                    SourceManifest prev = config.incrementalEnabled()
+                    SourceManifest prev = !adhoc && config.incrementalEnabled()
                             ? SourceManifest.load(manifestPath(name), source, log) : null;
-                    String fullReason = !config.incrementalEnabled()
-                            ? "增量备份未启用" : fullBackupReason(prev, name, retention);
+                    String fullReason;
+                    if (adhoc) {
+                        fullReason = "临时备份固定全量";
+                    } else if (!config.incrementalEnabled()) {
+                        fullReason = "增量备份未启用";
+                    } else {
+                        fullReason = fullBackupReason(prev, name, retention);
+                    }
                     boolean full = fullReason != null;
                     if (full) log.info("本次全量备份: " + fullReason);
                     Path archiveBase = config.workDir().resolve(name + "-" + runId
@@ -128,9 +151,11 @@ public class BackupService {
                         uploader.upload(part, remote);
                         remotePaths.add(remote);
                     }
-                    retention.ensureMonthlySnapshot(uploader, parts, remotePaths, name);
-                    retention.ensureYearlySnapshot(uploader, parts, remotePaths, name);
-                    saveManifest(source, name, prev, result, full, log);
+                    if (!adhoc) {
+                        retention.ensureMonthlySnapshot(uploader, parts, remotePaths, name);
+                        retention.ensureYearlySnapshot(uploader, parts, remotePaths, name);
+                        saveManifest(source, name, prev, result, full, log);
+                    }
                     if (!full) {
                         // 增量日: 把"上次全量 + 其后增量"云端复制进今日文件夹,
                         // 保证每天下载整个日期文件夹即可解压出当日完整服务端(复制零流量)
@@ -145,17 +170,19 @@ public class BackupService {
                 }
             }
 
-            try {
-                retention.backfillSnapshots(uploadedDailyFiles);
-            } catch (Exception e) {
-                log.warn("快照补全核对失败: " + e.getMessage());
-            }
+            if (!adhoc) {
+                try {
+                    retention.backfillSnapshots(uploadedDailyFiles);
+                } catch (Exception e) {
+                    log.warn("快照补全核对失败: " + e.getMessage());
+                }
 
-            try {
-                retention.cleanExpiredDaily(config.dailyDir());
-            } catch (Exception e) {
-                log.error("云端过期清理失败: " + e.getMessage(), e);
-                allOk = false;
+                try {
+                    retention.cleanExpiredDaily(config.dailyDir());
+                } catch (Exception e) {
+                    log.error("云端过期清理失败: " + e.getMessage());
+                    allOk = false;
+                }
             }
 
             cleanLocalLogs(log);
